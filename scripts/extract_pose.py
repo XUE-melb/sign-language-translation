@@ -155,11 +155,16 @@ def process_one(task):
     t0 = time.time()
     try:
         if os.path.exists(dst) and not _CFG["overwrite"]:
+            # 已提取过：检出率直接从 mask 段反算，不重跑视频。
+            # 这样边下边提、分多次运行时，最终 manifest 仍然是完整可统计的。
             arr = np.load(dst, mmap_mode="r")
+            ms, me = _CFG["mask_span"]
+            m = np.asarray(arr[:, ms:me], dtype=np.float32).mean(axis=0)
             return dict(split=split, translator=translator, number=number,
                         frames=arr.shape[0], dim=arr.shape[1], fps=0.0,
-                        pose_rate=-1, lh_rate=-1, rh_rate=-1, face_rate=-1,
-                        seconds=0.0, status="skipped")
+                        pose_rate=round(float(m[0]), 4), lh_rate=round(float(m[1]), 4),
+                        rh_rate=round(float(m[2]), 4), face_rate=round(float(m[3]), 4),
+                        seconds=0.0, status="cached")
 
         feats, dets, fps = [], [], 0.0
         for bgr, fps in _read_frames(src, _CFG["resize_width"]):
@@ -299,8 +304,10 @@ def main():
     if not tasks:
         return
 
+    mask_seg = [g for g in segs if g["name"] == "mask"][0]
     cfg = {"model_complexity": args.model_complexity,
-           "resize_width": args.resize_width, "overwrite": args.overwrite}
+           "resize_width": args.resize_width, "overwrite": args.overwrite,
+           "mask_span": (mask_seg["start"], mask_seg["end"])}
 
     man_path = os.path.join(pose_root, "manifest_{}.csv".format(args.split))
     fields = ["split", "translator", "number", "frames", "dim", "fps",
@@ -315,7 +322,7 @@ def main():
             for rec in pool.imap_unordered(process_one, tasks, chunksize=1):
                 w.writerow(rec)
                 done += 1
-                if rec["status"] in ("ok", "skipped"):
+                if rec["status"] in ("ok", "cached"):
                     ok += 1
                 else:
                     print("  !! {} {}".format(rec["number"], rec["status"]), flush=True)

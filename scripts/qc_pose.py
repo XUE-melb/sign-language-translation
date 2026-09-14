@@ -48,8 +48,8 @@ def main():
         print("  {:<11} [{:>3}:{:>3}]  {} 点 x {} 通道".format(
             s["name"], s["start"], s["end"], s["n_points"], s["n_channels"]))
 
-    ok = [r for r in rows if r["status"] in ("ok", "skipped")]
-    bad = [r for r in rows if r["status"] not in ("ok", "skipped")]
+    ok = [r for r in rows if r["status"] in ("ok", "cached")]
+    bad = [r for r in rows if r["status"] not in ("ok", "cached")]
     print("=" * 72)
     print("[{}] manifest {} 条，成功 {}，失败 {}".format(
         args.split, len(rows), len(ok), len(bad)))
@@ -66,14 +66,14 @@ def main():
     for n in sorted(ann_ids - got_ids)[:args.show]:
         print("  缺:", n)
 
-    real = [r for r in ok if float(r["pose_rate"]) >= 0]   # 跳过 skipped 的占位行
+    real = [r for r in ok if float(r["pose_rate"]) >= 0]
     if not real:
-        print("\n(本次全部为 skipped，无新统计)")
+        print("\n(无可统计样本)")
         return
 
     frames = [int(r["frames"]) for r in real]
     print("=" * 72)
-    print("帧数分布 (CLAUDE.md 记载平均约 158 帧):")
+    print("帧数分布 (dev 实测均值 186):")
     describe("frames", frames, "{:.0f}")
 
     print("\n检出率分布:")
