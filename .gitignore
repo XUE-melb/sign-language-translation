@@ -1,0 +1,18 @@
+# 数据集：CE-CSL 视频不得再分发（见 CLAUDE.md 硬约束）
+CE-CSL/
+*.mp4
+*.npy
+*.rar
+
+# 第三方仓库（单独 clone，不纳入本仓库）
+TFNet/
+
+# 环境与产物
+.venv*/
+__pycache__/
+*.pyc
+logs/
+
+# 备份
+*.bak
+*.bak2
