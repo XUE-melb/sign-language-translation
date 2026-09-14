@@ -2,7 +2,7 @@
 
 **新会话从这里开始读。** 然后读 `CLAUDE.md`、`docs/DECISIONS.md`、`docs/EXPERIMENTS.md`。
 
-最后更新：2026-09-14 20:50
+最后更新：2026-09-14 23:45
 
 ---
 
@@ -51,9 +51,13 @@ SSH 从墨尔本连北京，断线是常态。
 
 | split | 视频下载 | 关键点提取 | 说明 |
 |-------|---------|-----------|------|
+| train | 4973/4973 ✅ | **4973/4973 ✅** | 已核对，零缺失零失败 |
 | dev | 515/515 ✅ | **515/515 ✅** | 已核对，零缺失 |
 | test | 500/500 ✅ | **500/500 ✅** | 已核对，零缺失 |
-| train | 进行中 | 进行中 | 见下方"正在跑什么" |
+
+**数据准备阶段全部完成（2026-09-14 23:41）。** 全量 5988 条，pose 共 1.2 GB。
+质检结论见 DECISIONS.md D-016：不剔除任何样本，train 与 dev 分布一致
+（帧数均值 187 vs 186，手部检出率 train 略好）。
 
 特征：`CE-CSL/pose/{split}/{translator}/{number}.npy`，`(T, 538)` float16。
 分段布局在 `CE-CSL/pose/layout.json`，**dataloader 按它切片，不要硬编码偏移**。
@@ -70,20 +74,11 @@ mask       [534:538]  4 个 0/1 标志（pose/左手/右手/face 是否检出）
 
 ## 三、正在跑什么
 
-`tmux work:pipeline` 跑 `scripts/pipeline_train.sh`：
-**边下边提**（下载是网络瓶颈，CPU 并行提取），循环直到下载完成且提取追平，
-然后自动执行完整性核对 + 质检。
+**没有后台任务在跑。** 数据准备已于 2026-09-14 23:41 全部完成
+（`logs/pipeline_train.log` 末尾是 `PIPELINE DONE`）。
 
-查进度：
-```bash
-ssh autodl 'tail -5 /root/autodl-tmp/slt/logs/pipeline_train.log'
-```
-
-跑完会打印 `PIPELINE DONE`，后面跟着 `check_split.py` 和 `qc_pose.py` 的报告。
-
-**预计 2026-09-15 凌晨完成。**
-
----
+tmux 会话 `work` 里的 `download` / `pose` / `pipeline` 三个窗口均已结束，
+可以复用。
 
 ## 四、下一步（按顺序）
 
