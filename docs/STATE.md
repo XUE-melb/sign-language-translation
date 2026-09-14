@@ -2,7 +2,7 @@
 
 **新会话从这里开始读。** 然后读 `CLAUDE.md`、`docs/DECISIONS.md`、`docs/EXPERIMENTS.md`。
 
-最后更新：2026-09-14 23:45
+最后更新：2026-09-15 00:05
 
 ---
 
@@ -74,11 +74,27 @@ mask       [534:538]  4 个 0/1 标志（pose/左手/右手/face 是否检出）
 
 ## 三、正在跑什么
 
-**没有后台任务在跑。** 数据准备已于 2026-09-14 23:41 全部完成
-（`logs/pipeline_train.log` 末尾是 `PIPELINE DONE`）。
+**阶段 0 正式实验（E-000）进行中**，2026-09-14 23:59 启动，
+跑在 tmux `work:stage0`，脚本 `scripts/run_stage0.sh`。
 
-tmux 会话 `work` 里的 `download` / `pose` / `pipeline` 三个窗口均已结束，
-可以复用。
+协议见 DECISIONS.md D-017：lr 搜索 3 趟（3e-4 / 1e-3 / 3e-3，seed 1234）
+-> 选定 lr 后补 seed 2345 / 3456 -> 每个 seed 用 best checkpoint 在 test 上
+各评一次 -> 汇总均值±std。
+
+实测 25.2 秒/epoch，100 epoch 约 42 分钟一趟，**5 趟合计约 3.5 小时**，
+预计 2026-09-15 03:30 前后完成。
+
+查进度：
+```bash
+ssh autodl 'tail -5 /root/autodl-tmp/slt/logs/stage0.log'
+ssh autodl 'grep "^\[" /root/autodl-tmp/slt/logs/stage0.log | tail -5'
+```
+
+跑完日志末尾是 `STAGE0 DONE`，前面跟着三个 seed 的 test 结果汇总表。
+
+**跑完后要做的事：把汇总结果写进 `docs/EXPERIMENTS.md` 的 E-000 行**
+（备注注明 signer-dependent、官方划分、字级 sacrebleu），
+并检查 100 epoch 时 dev 曲线是否还在上升（若是则说明欠训练，需加 epoch 重跑）。
 
 ## 四、下一步（按顺序）
 
