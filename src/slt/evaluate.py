@@ -96,14 +96,17 @@ def main():
         tr_args["max_frames"]))
 
     hyps, refs, trs, nums = decode_split(model, dl, vocab, device, args.max_len)
-    res = compute_metrics(hyps, refs, trs)
+    res = compute_metrics(hyps, refs, trs, with_floor=True)   # 最终评测才算地板
     res["_meta"] = {
         "ckpt": os.path.abspath(args.ckpt), "split": args.split,
         "epoch": ck["epoch"], "dev_bleu4_at_select": ck["dev_bleu4"],
         "seed": tr_args.get("seed"), "train_split": tr_args["train_split"],
         "protocol": "signer-dependent，CE-CSL 官方划分",
-        "bleu": "sacrebleu corpus_bleu tokenize=zh（字级）",
+        "bleu": "sacrebleu corpus_bleu tokenize=zh（字级）；BLEU-n 用 max_ngram_order=n",
+        "chrf": "sacrebleu corpus_chrf（字符级，char_order=6）",
         "rouge": "rouge-chinese，字级", "input": inp,
+        "floor": "预测不变、打乱与参考的配对，5 次均值（D-015 的地板，现自动随每次评测给出）",
+        "decode": "greedy，max_len={}".format(args.max_len),
     }
 
     print()

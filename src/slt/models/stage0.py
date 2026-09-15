@@ -25,17 +25,28 @@ from slt.models.decoder import AttnLSTMDecoder, build_loss, lengths_to_mask  # n
 
 
 class FrameEncoder(nn.Module):
-    """逐帧空间编码。共享权重、逐帧独立，**不跨帧混合信息**。"""
+    """逐帧空间编码。共享权重、逐帧独立，**不跨帧混合信息**。
+
+    输入先过 LayerNorm 再进第一层 Linear（见 D-022）。RTM 的 207 维里
+    body 段 |xy| 均值约 0.46，手/脸段只有 0.06-0.09，相差 5-8 倍
+    ——这是 D-021 正确复刻 Uni-Sign 预处理的副作用（只有 body 走完整
+    crop_scale，手/脸只共享它的 scale，不各自铺满 [-1,1]）。阶段 1 的
+    Uni-Sign 编码器每层 GCN 内置 BatchNorm，天然不受这个尺度差影响；
+    阶段 0 这里如果不归一化，第一层 Linear 的梯度会被 body 这几维主导，
+    手/脸的信号在训练早期几乎学不动，等于比阶段 1 少一层它免费拿到的
+    归一化。不加这层，E-000b 不是"架构更弱"，是"输入没喂对"。
+    """
 
     def __init__(self, in_dim, hidden, out_dim, dropout=0.1):
         super().__init__()
+        self.norm = nn.LayerNorm(in_dim)
         self.net = nn.Sequential(
             nn.Linear(in_dim, hidden), nn.ReLU(), nn.Dropout(dropout),
             nn.Linear(hidden, out_dim), nn.ReLU(), nn.Dropout(dropout),
         )
 
     def forward(self, x):                       # (B, T, D) -> (B, T, out)
-        return self.net(x)
+        return self.net(self.norm(x))
 
 
 class Seq2SeqLSTM(nn.Module):

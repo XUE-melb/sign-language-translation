@@ -2,14 +2,14 @@
 
 **新会话从这里开始读。** 然后读 `CLAUDE.md`、`docs/DECISIONS.md`、`docs/EXPERIMENTS.md`。
 
-最后更新：2026-09-15 12:00
+最后更新：2026-09-15 22:30（北京时间）
 
 ---
 
 ## 一、怎么连上去干活
 
 ```bash
-ssh autodl                      # 已配置免密（公钥已装到服务器）
+ssh autodl                      # 已配置免密
 ```
 
 | 位置 | 路径 |
@@ -18,160 +18,134 @@ ssh autodl                      # 已配置免密（公钥已装到服务器）
 | 本地项目 | `D:\AI\slt-project` |
 | GitHub | https://github.com/XUE-melb/sign-language-translation （公开） |
 
-本地 → 服务器：用 `scp`。服务器 → 本地：`bash scripts/sync_from_server.sh`
-（只同步文档和脚本，不同步数据）。
+本地 → 服务器：`scp`。服务器 → 本地：`bash scripts/sync_from_server.sh`（只同步文档和脚本）。
 
 **实例 2026-09-28 到期。**
 
-### ⚠️ 两个 Python 环境，别用混
+### 三个 Python 环境，别用混
 
-| 用途 | 解释器 |
-|------|--------|
-| pose 提取（mediapipe） | `/root/autodl-tmp/slt/.venv-pose/bin/python` |
-| 训练 / 评测（torch） | `/root/miniconda3/bin/python`（登录 shell 里就是 `python`） |
+| 用途 | 解释器 | 启动方式 |
+|------|--------|---------|
+| MediaPipe 提取 | `.venv-pose/bin/python` | 直接调 |
+| RTMPose 提取 | `.venv-rtmpose/bin/python` | **必须经 `scripts/run_rtmpose.sh`**（设 LD_LIBRARY_PATH，否则 onnxruntime 静默退回 CPU，慢 90 倍） |
+| 训练 / 评测 | `/root/miniconda3/bin/python` | 登录 shell 里就是 `python`，需 `PYTHONPATH=src` |
 
-分开的原因见 `DECISIONS.md` D-003（mediapipe 要 numpy≥2，torch 2.3.0 要 numpy<2）。
-两侧只通过 `.npy` 文件交互。
+原因：D-003（mediapipe 与 torch 的 numpy 冲突）、D-020（onnxruntime-gpu 1.19.2 + cuDNN 9 是唯一能走 GPU 的组合）。
 
-### ⚠️ ssh 执行命令必须用登录 shell
+### ssh 执行命令必须用登录 shell
 
-```bash
-ssh autodl 'bash -lc "python -V"'      # 对
-ssh autodl 'python -V'                 # 错：conda 不在 PATH，报 command not found
-```
+`ssh autodl 'bash -lc "python -V"'` 对；`ssh autodl 'python -V'` 错（conda 不在 PATH）。
 
-### 长任务一律放 tmux
-
-会话 `work`，现有窗口：`download`、`pose`、`pipeline`。
-SSH 从墨尔本连北京，断线是常态。
+### 长任务一律放 tmux 会话 `work`
 
 ---
 
-## 二、数据现状
+## 二、数据现状：两套关键点，用途不同
 
-| split | 视频下载 | 关键点提取 | 说明 |
-|-------|---------|-----------|------|
-| train | 4973/4973 ✅ | **4973/4973 ✅** | 已核对，零缺失零失败 |
-| dev | 515/515 ✅ | **515/515 ✅** | 已核对，零缺失 |
-| test | 500/500 ✅ | **500/500 ✅** | 已核对，零缺失 |
+| 数据 | 路径 | 格式 | 用途 |
+|------|------|------|------|
+| MediaPipe | `CE-CSL/pose/` | `(T, 538)` float16 `.npy`，布局在 `pose/layout.json` | E-000（历史基线）、**C 层端侧** |
+| **RTMPose** | `CE-CSL/pose_rtm/` | `(T, 133, 2)` + `(T, 133)` `.pkl`，Uni-Sign 格式 | **主消融表全部四行**（E-000b 起） |
 
-**数据准备阶段全部完成（2026-09-14 23:41）。** 全量 5988 条，pose 共 1.2 GB。
-质检结论见 DECISIONS.md D-016：不剔除任何样本，train 与 dev 分布一致
-（帧数均值 187 vs 186，手部检出率 train 略好）。
-
-特征：`CE-CSL/pose/{split}/{translator}/{number}.npy`，`(T, 538)` float16。
-分段布局在 `CE-CSL/pose/layout.json`，**dataloader 按它切片，不要硬编码偏移**。
-
-```
-pose       [  0:132]  33 点 × (x,y,z,visibility)
-left_hand  [132:195]  21 点 × (x,y,z)
-right_hand [195:258]  21 点 × (x,y,z)
-face       [258:534]  92 点 × (x,y,z)
-mask       [534:538]  4 个 0/1 标志（pose/左手/右手/face 是否检出）
-```
+两套都是全量 5988 条，零缺失（train 4973 / dev 515 / test 500）。
+RTMPose 用 `lightweight` mode（不是论文写的 RTMPose-x，见 D-020 的证据）。
+`src/slt/data_rtm.py` 复刻 Uni-Sign 的预处理：69 点分组、**只有 body 走 crop_scale**、
+手/脸共享其 scale（D-021 修正过一次实质错误，现已逐行对齐源码）。
 
 ---
 
 ## 三、正在跑什么
 
-**没有后台任务在跑。**
+**`tmux work:chain` 正在跑 `scripts/run_chain.sh`，2026-09-15 22:04 启动**，
+这是 **D-022 纠错后**的重跑。链路：lr 复查（3 个 lr，dev-only）→ E-000b（阶段 0，3 seed）
+→ E-001（阶段 1，3 seed）→ test 各评一次 → 汇总。
 
-阶段 0（E-000）已完成并结案：test **BLEU-4 1.41 ± 0.15**，
-ROUGE-L 20.86 ± 0.69（lr=3e-4，epochs=100，batch=16，3 seed）。
-lr 搜索的边界缺口已于 2026-09-15 扩展并结案（D-018），结论是保留 3e-4，
-test 未二次曝光。
+实测单 epoch 约 29s，全链约 **6.5 小时**，预计北京时间 **09-16 04:30** 出结果。
+查进度：`ssh autodl 'grep "^\[" /root/autodl-tmp/slt/logs/chain.log | tail'`
 
-详见 `docs/EXPERIMENTS.md` 的 E-000 行与实验日志明细。
-
-## 四、下一步（按顺序）
-
-### 1. 等 PIPELINE DONE，看质检报告
-重点看 train 的手部检出率分布。dev 的基线是左手均值 0.550 / 右手 0.501。
-**如果 train 差很多，超参和预期都要跟着调。**
-
-### 2. 跑阶段 0 正式实验
-
-```bash
-ssh autodl 'bash -lc "cd /root/autodl-tmp/slt && \
-  PYTHONPATH=src python -m slt.train \
-    --train-split train --eval-split dev --epochs 60"'
-```
-
-**这一跑就是 `EXPERIMENTS.md` 的第一行 E-000。** 跑完必须：
-- 用 best checkpoint 在 **test** 上评测（不是 dev）
-- 追加一行到 `docs/EXPERIMENTS.md`，备注写明 **signer-dependent，官方划分**
-- 把超参、曲线观察写进 EXPERIMENTS.md 的"实验日志明细"
-
-超参尚未定（epoch / lr / batch）。冒烟用的是 `lr=1e-3, batch=16, epochs=80`，
-仅供参考，不是调过的。
-
-### 3. 在跑阶段 1 之前，必须先解决下面那个遗留冲突
+跑完日志末尾是 `CHAIN DONE`，前面有可直接粘进 EXPERIMENTS.md 的两行。
+**跑完后要做**：把 E-000b / E-001 写进 EXPERIMENTS.md；检查 `summarize_chain.py`
+输出的"差值 vs 合成标准差"判定，**不许把噪声内的差异写成提升**。
 
 ---
 
-## 五、未解决的问题（欠着的债）
+## 四、D-022：审视后停链重跑（重要，新会话必读）
 
-### ✅ 已解决：模态路线（原阻塞阶段 1）
+2026-09-15 晚用另一个模型对项目做独立审视，发现三处协议缺陷，全部经实测复核成立：
 
-**2026-09-15 由本人拍板（D-019）：主线走全程 pose（路线 A）**，
-四阶段输入模态一律是关键点；阶段 3 重新解释为"把 538 维拆成多条流
-（身体/双手/面部）各自编码 + 跨模态融合"。
-四阶段跑完后，再在**阶段 2 的配置下**做一次 RGB 附加实验（可砍项），
-明确标注为模态与编码器的合并效应，不做单变量归因。
+1. **ReduceLROnPlateau 把 lr 吃到 ~1/10⁶**，100 个 epoch 只有约 20 个在真正优化。已删掉 scheduler，lr 逐 epoch 落盘。
+2. **rtm 输入无条件 `frame_stride=2`**，Uni-Sign 训练时是原生帧率。已改为 rtm 默认 stride=1。
+3. **阶段 0 FrameEncoder 无输入归一化**，而 rtm 各段尺度差 5-8 倍、阶段 1 内置 BN。已加 LayerNorm。
 
-**仍待确定**：阶段 1 具体用哪个骨架预训练编码器，需调研。
-
-### 原记录（供溯源）：时空编码器吃 RGB，我们的输入是关键点
-
-阶段 1 要把视觉编码器换成"冻结的预训练时空编码器"，但主流的（VideoMAE 等）
-吃 RGB 视频，而 D-002 已决定不落地 RGB 帧。两条路都有代价：
-
-- 回头解码 RGB → 推翻 D-002 的存储结论，且阶段 0→1 同时变了**输入模态**和
-  **编码器**两个变量，消融失去单变量性
-- 找基于骨架的预训练编码器 → 保住单变量性，但这类模型的预训练规模和通用性
-  远不如 RGB 视频模型
-
-**没有答案。阶段 1 开工前必须定。** 详见 DECISIONS.md D-002、D-013。
-
-### 🟡 该做而未做（成本低，价值高）
-
-| 欠的事 | 出处 | 成本 |
-|--------|------|------|
-| 评测结果按 Translator 分层拆解 | D-009 | 已实现在 `metrics.py`，跑评测时记得看 |
-| 统计 dev/test 的 OOV 率 | D-014 | 很低，几行代码 |
-| `--normalize none` 的对照实验 | D-011 | 一次训练 |
-| `frame_stride=1` 的对照实验 | D-011 | 一次训练 |
-
-### 🟡 面试准备上的缺口
-
-- **D-001 的追问「那你申请 CSL-Daily 了吗？」** 本人需想好怎么答
-- `DECISIONS.md` 里 CSL-News 一行仍是 `[待核]`
+E-000b 三 seed + E-001 部分结果**已作废删除**，在新协议下重跑（即上面正在跑的链）。
+**E-000（MediaPipe 基线）也受缺陷 ① 影响**，保留但已加注，它本就不是消融表的第 0 行。
 
 ---
 
-## 六、这个项目的规矩（不是可选项）
+## 五、已完成的代码资产
 
-1. **`docs/DECISIONS.md`：每个技术决策追加一条**，含数据依据（写具体数字，
-   不写"效果更好"）、否决了哪些方案及理由、代价与风险、面试可能的追问。
-2. **`docs/EXPERIMENTS.md`：每次训练评测追加一行。** 这张表的最终形态就是
-   四阶段消融表，是本项目的核心产出。
-3. **冒烟/调试的数字绝不写进 EXPERIMENTS.md。** `train.py` 在
-   `train_split == eval_split` 时会强制告警。
-4. **不确定的外部数字标 `[待核]`**，不要凭印象写。这份文档是用来面试溯源的，
-   编一个听起来合理的理由比没有更糟。
-5. **模型定义、训练循环与 loss、评测指标计算、数据对齐方式** —— 这四块
-   本人要能逐行讲清楚，写完要讲解。其余（dataloader、预处理、评测脚本、
-   C 层、D 层、文档）由 Claude 全权负责。
+| 文件 | 作用 | 状态 |
+|------|------|------|
+| `src/slt/models/decoder.py` | 所有阶段共用的 LSTM+attention 解码器 | D-021，两阶段解码器逐张量验证相同 |
+| `src/slt/models/stage0.py` | 逐帧 MLP（**含 LayerNorm**，D-022）+ BiLSTM | 就绪 |
+| `src/slt/models/stage1.py` | 冻结 Uni-Sign 编码器 + 同一解码器；均值池化初始化 | 权重 missing 0 / unexpected 0 |
+| `src/slt/models/unisign_encoder.py` | 只搭 Uni-Sign pose 分支，不加载 966M 的 mT5 | 就绪 |
+| `src/slt/data_rtm.py` | Uni-Sign 预处理复刻 | 六项测试通过 |
+| `src/slt/train.py` / `evaluate.py` | `--stage {0,1} --input {mediapipe,rtm}` | 就绪 |
+| `scripts/run_chain.sh` | 无人值守链 | 运行中 |
 
 ---
 
-## 七、踩过的坑（省时间用）
+## 六、下一步（链跑完之后，按顺序）
+
+1. 填 E-000b / E-001 进 EXPERIMENTS.md，判显著性
+2. 便宜的评测增强：evaluate.py 加 chrF / BLEU-1..3 / 打乱配对地板；配对 bootstrap 脚本
+3. **阶段 2 设计**（未定）：用 Uni-Sign checkpoint 里的 mT5 还是原版 mT5；冻结还是 LoRA；训练环境要装 transformers
+4. 阶段 3、RGB 收尾实验（D-019）
+
+---
+
+## 七、未解决的问题
+
+### 阶段 2 的设计还没定（阻塞阶段 2 开工）
+mT5 来源（Uni-Sign 已调过的 vs 原版）、冻结 vs LoRA、投影层怎么接。`pose_proj`（Linear 1024→768）已在 Uni-Sign 权重里，可作起点。
+
+### 记录在案、暂不修
+- 零填充 vs Uni-Sign 的"重复末帧"：只污染阶段 1 每条序列最后约 2 帧（D-022）
+- 超长序列抽样：我们确定性 `linspace`，Uni-Sign 每轮随机（D-022，有意偏离）
+- 解码方式（greedy、max_len=60）**未写进任何 D 条目**，阶段 2 前要定 beam 与否
+- C 层（端侧 MediaPipe）与 B 层输入（RTMPose 格式）不一致，未定
+- RTMPose 对画外的手会外推出 conf>0.3 的点（K：MediaPipe 0.157 → RTMPose 0.79），D-005 的叙事应改成"依赖提取器"
+
+### 欠的账
+| 事项 | 出处 | 状态 |
+|------|------|------|
+| OOV 率 | D-014 | 审视时已量：dev 2/4880 (0.04%)，test 6/5383 (0.11%)，**待本人复核后关账** |
+| test 比 train 略难（199 帧 vs 187；手部置信度 0.68 vs 0.71） | 质检 | 已写进 EXPERIMENTS |
+| `--normalize none` / stride 对照 | D-011 | 未做 |
+| CSL-News 规模 751,320 条 / 均 9.5s / 40 字 | D-001 | **[待核]**，本人未核 |
+| D-001 追问「申请 CSL-Daily 了吗」 | D-001 | 本人待答 |
+| 三个环境无 requirements 文件 | — | 待补 |
+
+---
+
+## 八、这个项目的规矩（不是可选项）
+
+1. `docs/DECISIONS.md`：每个技术决策追加一条，含数据依据、否决方案、代价、面试追问。
+2. `docs/EXPERIMENTS.md`：每次训练评测追加一行。
+3. 冒烟数字绝不进 EXPERIMENTS.md。
+4. 外部数字标 `[待核]`，不凭印象写；**不替本人编决策理由**。
+5. 模型定义、训练循环与 loss、评测指标、数据对齐 —— 本人要能逐行讲。
+
+---
+
+## 九、踩过的坑
 
 | 坑 | 解法 |
 |----|------|
-| ssh 里套多层引号必挂 | 本地写好脚本 → `scp` → 远程执行。不要在 ssh 命令行里嵌套引号 |
-| 长文件用 heredoc 会被截断 | 用 Write 工具落地本地文件再 scp |
-| Bash 工具 10 分钟超时 | 长任务丢进 tmux，用轮询查状态 |
-| `pgrep -f xxx` 会匹配到自己 | 结果要排除自身命令行 |
-| pip 装 mediapipe 陷入版本回溯 | `--no-deps` 装，再手工补运行时依赖（D-003） |
-| 改 CLAUDE.md 等关键文件 | 用带断言的脚本（原文必须唯一命中），并留 `.bak` |
+| ssh 套多层引号 / heredoc 超长 | 本地用 Write 落脚本 → scp → 远程执行；长文件绝不用 heredoc |
+| Bash 工具 10 分钟超时 | 长任务进 tmux，轮询查 |
+| `pgrep -f` / **`pkill -f` 自匹配** | `pkill -f 'xx[x]'` 或按 PID 杀；pkill 自匹配会把自己的 ssh 一起杀掉 |
+| onnxruntime `get_available_providers()` 报 CUDA 可用却跑 CPU | 看 `session.get_providers()` 或直接看耗时 |
+| 对齐第三方模型只读论文/摘要 | **读它的 dataloader 源码**：mode、预处理、帧采样每一步都可能有约定（D-020/021/022 各踩一次） |
+| 挂在噪声指标上的 scheduler | 不用；lr 逐 epoch 落盘（D-022） |

@@ -76,7 +76,9 @@ def main():
     ap.add_argument("--batch-size", type=int, default=16)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--clip", type=float, default=5.0)
-    ap.add_argument("--frame-stride", type=int, default=2)
+    ap.add_argument("--frame-stride", type=int, default=None,
+                    help="不传则按 --input 自动选：mediapipe=2（沿用 E-000 的算力折衷），"
+                         "rtm=1（原生帧率，匹配 Uni-Sign 预训练时的采样约定，见 D-022）")
     ap.add_argument("--max-frames", type=int, default=256)
     ap.add_argument("--normalize", default="body", choices=["body", "none"])
     ap.add_argument("--stage", type=int, default=0, choices=[0, 1],
@@ -92,6 +94,9 @@ def main():
     ap.add_argument("--smoke", action="store_true",
                     help="冒烟模式：只验证流程，结果不得写入 EXPERIMENTS.md")
     args = ap.parse_args()
+
+    if args.frame_stride is None:
+        args.frame_stride = 2 if args.input == "mediapipe" else 1
 
     os.makedirs(args.out, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -156,8 +161,12 @@ def main():
     crit = build_loss(CharVocab.PAD, args.label_smoothing)
     opt = torch.optim.Adam(
         [p for p in model.parameters() if p.requires_grad], lr=args.lr)
-    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, mode="max",
-                                                       factor=0.5, patience=3)
+    # 不用 scheduler：D-017 定的协议是"搜一次 lr，全程固定"。一个挂在噪声很大的
+    # dev BLEU-4 上的 ReduceLROnPlateau 会在训练中把这个"固定值"悄悄改掉，
+    # 而且不落盘、事后无法追溯（见 D-022 —— 曾经因此把 100 个 epoch 的
+    # 预算变成实际只有约 20 个 epoch 在真正优化，其余在 lr≈0 下空转）。
+    # 固定 lr 意味着可能会晚一点过拟合甚至过拟合更狠，但 best.pt 是按
+    # dev BLEU-4 选的，不依赖训练能不能"收住"，所以不需要 scheduler 兜底。
 
     best = -1.0
     hist = []
@@ -190,9 +199,9 @@ def main():
             res, hyps, refs, _ = run_eval(model, dl_ev, vocab, device)
             msg += "  | BLEU-4 {:.2f}  ROUGE-L {:.2f}".format(
                 res["bleu4"], res["rouge-l"])
-            sched.step(res["bleu4"])
             hist.append({"epoch": ep, "loss": tot / max(nb, 1),
-                         "bleu4": res["bleu4"], "rouge-l": res["rouge-l"]})
+                         "bleu4": res["bleu4"], "rouge-l": res["rouge-l"],
+                         "lr": opt.param_groups[0]["lr"]})
             if res["bleu4"] > best:
                 best = res["bleu4"]
                 torch.save({"model": model.state_dict(), "args": vars(args),
