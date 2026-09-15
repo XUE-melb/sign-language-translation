@@ -20,6 +20,7 @@ from slt.data import CharVocab, PoseSLTDataset, collate_fn
 from slt.data_rtm import RTMPoseSLTDataset
 from slt.metrics import evaluate as compute_metrics, format_report
 from slt.models.stage0 import Seq2SeqLSTM
+from slt.models.stage1 import Stage1Model
 
 
 def pick_dataset(name):
@@ -79,11 +80,14 @@ def main():
                     num_workers=args.num_workers, collate_fn=collate_fn,
                     pin_memory=True)
 
-    model = Seq2SeqLSTM(**ck["model_cfg"]).to(device)
+    stage = tr_args.get("stage", 0)
+    Model = Seq2SeqLSTM if stage == 0 else Stage1Model
+    model = Model(**ck["model_cfg"]).to(device)
     model.load_state_dict(ck["model"])
 
     print("checkpoint: {}".format(args.ckpt))
-    print("  来自 epoch {}，训练时 dev BLEU-4 {:.2f}，seed {}".format(
+    print("  阶段 {} | 来自 epoch {}，训练时 dev BLEU-4 {:.2f}，seed {}".format(
+        stage,
         ck["epoch"], ck["dev_bleu4"], tr_args.get("seed", "?")))
     print("  训练 split {} | 本次评测 split {} | {} 条（缺关键点 {} 条）".format(
         tr_args["train_split"], args.split, len(ds), len(ds.missing)))

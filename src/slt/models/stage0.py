@@ -13,17 +13,15 @@
 
 3. **保留 LSTM 的真实短板。** 缺陷 #1（长程依赖弱）和 #3（解码器无语言先验）
    不做任何补救，它们正是阶段 1 / 阶段 2 要解决的东西。
+
+解码器来自 slt.models.decoder，与阶段 1 共用同一份代码 —— "解码器不动"
+因此是结构上保证的，不是口头承诺。
 """
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
-
-def lengths_to_mask(lengths, max_len):
-    """(B,) -> (B, max_len) 的 bool，True 表示真实帧。"""
-    ar = torch.arange(max_len, device=lengths.device)[None, :]
-    return ar < lengths[:, None]
+from slt.models.decoder import AttnLSTMDecoder, build_loss, lengths_to_mask  # noqa: F401
 
 
 class FrameEncoder(nn.Module):
@@ -38,25 +36,6 @@ class FrameEncoder(nn.Module):
 
     def forward(self, x):                       # (B, T, D) -> (B, T, out)
         return self.net(x)
-
-
-class BahdanauAttention(nn.Module):
-    """加性注意力。query=解码器隐状态，keys/values=编码器每帧输出。"""
-
-    def __init__(self, enc_dim, dec_dim, attn_dim):
-        super().__init__()
-        self.W_enc = nn.Linear(enc_dim, attn_dim, bias=False)
-        self.W_dec = nn.Linear(dec_dim, attn_dim, bias=False)
-        self.v = nn.Linear(attn_dim, 1, bias=False)
-
-    def forward(self, dec_h, enc_out, enc_mask):
-        # dec_h (B, dec_dim) / enc_out (B, T, enc_dim) / enc_mask (B, T)
-        score = self.v(torch.tanh(
-            self.W_enc(enc_out) + self.W_dec(dec_h)[:, None, :])).squeeze(-1)
-        score = score.masked_fill(~enc_mask, float("-inf"))   # padding 不参与
-        attn = torch.softmax(score, dim=-1)                   # (B, T)
-        ctx = torch.bmm(attn[:, None, :], enc_out).squeeze(1)  # (B, enc_dim)
-        return ctx, attn
 
 
 class Seq2SeqLSTM(nn.Module):
@@ -76,13 +55,8 @@ class Seq2SeqLSTM(nn.Module):
         self.init_h = nn.Linear(enc_out_dim, dec_hidden)
         self.init_c = nn.Linear(enc_out_dim, dec_hidden)
 
-        self.emb = nn.Embedding(vocab_size, emb_dim, padding_idx=pad_id)
-        self.attn = BahdanauAttention(enc_out_dim, dec_hidden, dec_hidden)
-        self.dec_cell = nn.LSTMCell(emb_dim + enc_out_dim, dec_hidden)
-        self.dropout = nn.Dropout(dropout)
-        self.out = nn.Linear(dec_hidden + enc_out_dim, vocab_size)
-
-    # ---------------------------------------------------------- 编码
+        self.decoder = AttnLSTMDecoder(vocab_size, enc_out_dim, dec_hidden,
+                                       emb_dim, dropout, pad_id, bos_id, eos_id)
 
     def encode(self, feats, feat_lens):
         x = self.frame_enc(feats)                       # (B, T, feat_dim)
@@ -99,52 +73,11 @@ class Seq2SeqLSTM(nn.Module):
         enc_mask = lengths_to_mask(feat_lens, enc_out.size(1))
         return enc_out, enc_mask, dec_h, dec_c
 
-    # ---------------------------------------------------------- 单步解码
-
-    def _step(self, y_prev, dec_h, dec_c, enc_out, enc_mask):
-        ctx, attn = self.attn(dec_h, enc_out, enc_mask)
-        emb = self.emb(y_prev)                                  # (B, emb)
-        dec_h, dec_c = self.dec_cell(torch.cat([emb, ctx], -1), (dec_h, dec_c))
-        logit = self.out(self.dropout(torch.cat([dec_h, ctx], -1)))
-        return logit, dec_h, dec_c, attn
-
-    # ---------------------------------------------------------- 训练前向
-
     def forward(self, feats, feat_lens, tokens):
-        """teacher forcing。tokens 形如 [BOS, c1, ..., cn, EOS]。
-
-        输入给解码器的是 tokens[:, :-1]，预测目标是 tokens[:, 1:] ——
-        即每一步都用"真实的前一个字"去预测"下一个字"，错位一位。
-        """
-        enc_out, enc_mask, dec_h, dec_c = self.encode(feats, feat_lens)
-        inp = tokens[:, :-1]
-        logits = []
-        for t in range(inp.size(1)):
-            logit, dec_h, dec_c, _ = self._step(inp[:, t], dec_h, dec_c,
-                                                enc_out, enc_mask)
-            logits.append(logit)
-        return torch.stack(logits, dim=1)          # (B, L-1, V)
-
-    # ---------------------------------------------------------- 推理
+        enc_out, enc_mask, h, c = self.encode(feats, feat_lens)
+        return self.decoder(enc_out, enc_mask, h, c, tokens)
 
     @torch.no_grad()
     def greedy_decode(self, feats, feat_lens, max_len=60):
-        enc_out, enc_mask, dec_h, dec_c = self.encode(feats, feat_lens)
-        B = feats.size(0)
-        y = torch.full((B,), self.bos_id, dtype=torch.long, device=feats.device)
-        done = torch.zeros(B, dtype=torch.bool, device=feats.device)
-        seqs = []
-        for _ in range(max_len):
-            logit, dec_h, dec_c, _ = self._step(y, dec_h, dec_c, enc_out, enc_mask)
-            y = logit.argmax(-1)
-            y = torch.where(done, torch.full_like(y, self.pad_id), y)
-            seqs.append(y)
-            done = done | (y == self.eos_id)
-            if bool(done.all()):
-                break
-        return torch.stack(seqs, dim=1)             # (B, <=max_len)
-
-
-def build_loss(pad_id, label_smoothing=0.0):
-    """padding 位不计入 loss —— 否则模型会因为'学会输出 pad'而虚假降 loss。"""
-    return nn.CrossEntropyLoss(ignore_index=pad_id, label_smoothing=label_smoothing)
+        enc_out, enc_mask, h, c = self.encode(feats, feat_lens)
+        return self.decoder.greedy(enc_out, enc_mask, h, c, max_len)

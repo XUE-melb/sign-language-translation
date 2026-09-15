@@ -24,7 +24,9 @@ from torch.utils.data import DataLoader
 from slt.data import CharVocab, PoseSLTDataset, collate_fn
 from slt.data_rtm import RTMPoseSLTDataset
 from slt.metrics import evaluate, format_report
-from slt.models.stage0 import Seq2SeqLSTM, build_loss
+from slt.models.decoder import build_loss
+from slt.models.stage0 import Seq2SeqLSTM
+from slt.models.stage1 import Stage1Model
 
 
 def pick_dataset(name):
@@ -77,6 +79,10 @@ def main():
     ap.add_argument("--frame-stride", type=int, default=2)
     ap.add_argument("--max-frames", type=int, default=256)
     ap.add_argument("--normalize", default="body", choices=["body", "none"])
+    ap.add_argument("--stage", type=int, default=0, choices=[0, 1],
+                    help="0 = 逐帧 MLP + BiLSTM；1 = 冻结的 Uni-Sign 编码器")
+    ap.add_argument("--unisign-ckpt",
+                    default="/root/autodl-tmp/slt/weights/unisign/csl_stage1_weight.pth")
     ap.add_argument("--input", default="mediapipe", choices=["mediapipe", "rtm"],
                     help="rtm = RTMPose 69 点(207 维)，阶段 1 的冻结编码器只认这个")
     ap.add_argument("--label-smoothing", type=float, default=0.0)
@@ -125,17 +131,31 @@ def main():
 
     # 显式写出来并存进 checkpoint，evaluate.py 据此重建同构模型，
     # 不依赖"默认值将来不变"这种隐含假设
-    model_cfg = dict(in_dim=ds_tr.dim, vocab_size=len(vocab),
-                     frame_hidden=512, feat_dim=512, enc_hidden=512,
-                     dec_hidden=512, emb_dim=256, enc_layers=2, dropout=0.3,
-                     pad_id=CharVocab.PAD, bos_id=CharVocab.BOS,
-                     eos_id=CharVocab.EOS)
-    model = Seq2SeqLSTM(**model_cfg).to(device)
+    ids = dict(pad_id=CharVocab.PAD, bos_id=CharVocab.BOS, eos_id=CharVocab.EOS)
+    if args.stage == 0:
+        model_cfg = dict(in_dim=ds_tr.dim, vocab_size=len(vocab),
+                         frame_hidden=512, feat_dim=512, enc_hidden=512,
+                         dec_hidden=512, emb_dim=256, enc_layers=2,
+                         dropout=0.3, **ids)
+        model = Seq2SeqLSTM(**model_cfg).to(device)
+    else:
+        if args.input != "rtm":
+            raise SystemExit("阶段 1 的冻结编码器只认 rtm 输入（见 D-020）")
+        model_cfg = dict(vocab_size=len(vocab), ckpt_path=args.unisign_ckpt,
+                         dec_hidden=512, emb_dim=256, dropout=0.3,
+                         freeze_encoder=True, **ids)
+        model = Stage1Model(**model_cfg).to(device)
+        print("  冻结编码器载入 {} 个张量（missing {} / unexpected {}）".format(
+            model.load_info["loaded"], len(model.load_info["missing"]),
+            len(model.load_info["unexpected"])), flush=True)
     n_par = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print("模型参数量 {:.2f}M，输入维度 {}".format(n_par / 1e6, ds_tr.dim), flush=True)
+    n_all = sum(p.numel() for p in model.parameters())
+    print("阶段 {} | 可训练 {:.2f}M / 总计 {:.2f}M | 输入维度 {}".format(
+        args.stage, n_par / 1e6, n_all / 1e6, ds_tr.dim), flush=True)
 
     crit = build_loss(CharVocab.PAD, args.label_smoothing)
-    opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+    opt = torch.optim.Adam(
+        [p for p in model.parameters() if p.requires_grad], lr=args.lr)
     sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, mode="max",
                                                        factor=0.5, patience=3)
 
@@ -158,7 +178,8 @@ def main():
 
             opt.zero_grad(set_to_none=True)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
+            torch.nn.utils.clip_grad_norm_(
+                [p for p in model.parameters() if p.requires_grad], args.clip)
             opt.step()
             tot += loss.item()
             nb += 1
