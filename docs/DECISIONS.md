@@ -1202,3 +1202,138 @@ seed 标准差 **0.15** —— 信号贴着噪声。在这个量级上比较模�
    — **这一问必须主动先说**：它是合并效应，不做单变量归因，只回答
    "在相同解码器下换用 RGB 的整体效果"。
 4. "投影层也没变吗？" — 见上，权重必须重训，只有结构和训练协议相同。
+
+---
+
+## D-020 用 RTMPose 重提关键点以匹配 Uni-Sign，mode 取 lightweight
+
+- **日期**：2026-09-15
+- **状态**：`[实测]`
+
+### 问题
+D-019 定了路线 A（全程 pose），阶段 1 要用「冻结的预训练时空编码器」。
+调研确定候选是 **Uni-Sign**（ICLR'25），但它在 **RTMPose 提取的 133 点**上
+预训练，而我们已有的是 **MediaPipe Holistic**。冻结模型对分布偏移没有
+适应能力，必须用同一个提取器重提一遍。
+
+### 决策
+1. 用 `rtmlib`（RTMPose 的轻量部署库）重新提取全量 5988 条，
+   落盘格式严格对齐 Uni-Sign 的 `demo/pose_extraction.py`
+2. **mode 取 `lightweight`**（不是论文写的 RTMPose-x）
+3. MediaPipe 版本**保留不删** —— C 层端侧本来就用 MediaPipe，
+   且两版之间的差异本身是可比较的信息
+
+### 为什么用 rtmlib 而不是 MMPose
+
+Uni-Sign 自己的 `demo/pose_extraction.py` **用的就是 `rtmlib.Wholebody`**，
+不是我们的选择而是对齐的结果。附带好处是绕开了 mmcv / mmengine / mmdet
+的版本地狱（CLAUDE.md 硬约束要求"遇冲突优先降级适配"，装 MMPose 大概率
+要动整套依赖）。
+
+### ⚠️ 关键发现：论文与代码不一致，以代码为准
+
+Uni-Sign **论文**写的是 RTMPose-x（对应 rtmlib 的 `performance`），
+但它的**提取脚本默认值**是：
+
+```python
+parser.add_argument("--mode", default="lightweight",
+                    choices=["performance", "lightweight", "balanced"])
+```
+
+实测两者差异（dev-00001 前 20 帧）：
+
+| | lightweight | performance |
+|---|---|---|
+| 检测器 | yolox_tiny | yolox_m |
+| 姿态模型 | rtmw-dw-l-m **256x192** | rtmw-dw-x-l **384x288** |
+| 单帧耗时 | **0.0153s** | 0.0257s |
+| 全量 5988 条单进程 | **4.8 小时** | 8.0 小时 |
+| 置信度 min / 中位 / max | **0.089 / 0.965 / 1.066** | 0.502 / 7.412 / 9.560 |
+| 置信度 > 0.3 的比例 | **0.925** | **1.000** |
+
+**决定性证据在最后两行。** Uni-Sign 的 dataloader 用 `conf > 0.3` 做
+有效性过滤，而模型的第三个输入通道就是置信度：
+
+- lightweight 下置信度在 **[0, 1]** 尺度，`0.3` 筛掉 7.5% 的点 —— **阈值有意义**
+- performance 下置信度在 **[0, 11]** 尺度，`0.3` 一个点都筛不掉 —— **阈值形同虚设**
+
+代码默认值与阈值语义**互相印证**，因此判定 Uni-Sign 的预训练数据是用
+lightweight 提取的。这不是"猜他们用哪个"，而是有内部一致性证据的推断。
+
+两种 mode 的关键点位置差异：逐点欧氏距离中位 **4.2 px**，双手约 **9.5 px**。
+
+### 环境：onnxruntime 走 GPU 的版本链
+
+踩了完整一轮，结论先写在前面 —— **可用组合只有一个**：
+
+```
+onnxruntime-gpu 1.19.2  +  pip nvidia-cudnn-cu12 9.x  +  LD_LIBRARY_PATH
+```
+
+排查过程 `[实测]`：
+
+| 尝试 | 结果 |
+|------|------|
+| onnxruntime-gpu 1.30.0（最新） | ✗ `libcublasLt.so.13: cannot open` —— **要求 CUDA 13，本机 12.1** |
+| onnxruntime-gpu 1.18.1 + 系统 cuDNN 8 | ✗ 建不起 CUDA session |
+| **onnxruntime-gpu 1.19.2 + pip cuDNN 9** | ✅ |
+
+本机事实：CUDA 12.1、驱动 580.142、系统 cuDNN 8.9.0、
+`libcublasLt.so.12` 在 `/usr/local/cuda/targets/x86_64-linux/lib`。
+
+**必须经 `scripts/run_rtmpose.sh` 启动**：pip 装的 cuDNN 在
+`site-packages/nvidia/*/lib`，不在系统库搜索路径里，且 `LD_LIBRARY_PATH`
+必须在 **python 启动之前**设好，进程起来后再设无效。
+
+### ⚠️ 判据必须是 session 实际绑定的 provider
+
+`ort.get_available_providers()` 返回 `['CUDAExecutionProvider', ...]`
+**只说明编译时带了 CUDA**，不代表能用。第一次就被它骗了 ——
+它报 CUDA 可用，实际**静默退回 CPU**，跑了 25 分钟才发现。
+
+正确判据：建完 session 后看 `session.get_providers()`，或者直接看耗时。
+
+实测差距：**单帧 2.204s (CPU) → 0.025s (GPU)，89.7 倍**。
+全量 665 小时 → 4.8 小时。**如果没发现这个，等于白跑一整天。**
+
+### 支撑数据 `[实测]`
+
+试提 20 条（后因 mode 用错已作废重提）验证了格式：
+
+```
+keypoints (236, 133, 2) float32    scores (236, 133) float32
+坐标范围 x [0.078, 0.828]  y [0.096, 1.362]
+帧数与 MediaPipe 完全一致：20/20
+```
+
+正式提取：3 worker，GPU 利用率 **89%**，约 **21 条/分钟**，全量约 **4.75 小时**。
+
+### 代价与接受的风险
+
+- **无法 100% 确认 Uni-Sign 预训练时用的就是 lightweight。**
+  论文与代码本身矛盾，我们只能匹配其公开脚本的默认配置 + 阈值语义证据。
+  这是可辩护的最优选择，**但不是零风险**。
+- 阶段 0 需要在 RTMPose 输入上重跑（E-000b），否则阶段 0→1 会同时变动
+  **关键点提取器**和**编码器**两个变量。已有的 E-000（MediaPipe）保留，
+  两者差异另作附加信息。
+- **Uni-Sign 权重是 CC-BY-NC-4.0（非商用）**。作为求职作品集可用，
+  但权重不得提交进公开仓库，文档需注明来源与许可。
+- 多维护一个隔离环境（`.venv-rtmpose`），现在共三个 Python 环境。
+- 未做「检测每帧跑 vs 只跑一次」的优化。手语是固定机位单人，
+  复用首帧 bbox 可省近一半时间，但**Uni-Sign 的脚本是每帧都检测**，
+  保持一致比省几小时更重要。
+
+### 面试官最可能问
+
+1. **"你怎么确定用哪个 mode？论文和代码不一样。"**
+   — 这是这条日志最有价值的部分。讲置信度尺度证据：
+   只有 lightweight 的 `conf>0.3` 阈值有意义（筛掉 7.5%），
+   performance 下形同虚设（筛掉 0%）。
+2. **"为什么不直接用 MediaPipe 的关键点喂进去？"**
+   — 冻结编码器对分布偏移没有适应能力；两个提取器的点位定义、
+   噪声特性、置信度尺度都不同。
+3. **"你怎么发现 onnxruntime 其实在跑 CPU？"**
+   — `get_available_providers()` 会骗人，要看 session 实际绑定的 provider，
+   或直接看耗时（2.2s vs 0.025s，差 90 倍瞒不住）。
+4. "重提一遍不浪费吗？" — MediaPipe 版保留，C 层端侧要用；
+   且两版差异是附加信息。
