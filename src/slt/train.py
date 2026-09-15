@@ -14,14 +14,25 @@ import argparse
 import csv
 import json
 import os
+import random
 import time
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
 from slt.data import CharVocab, PoseSLTDataset, collate_fn
+from slt.data_rtm import RTMPoseSLTDataset
 from slt.metrics import evaluate, format_report
 from slt.models.stage0 import Seq2SeqLSTM, build_loss
+
+
+def pick_dataset(name):
+    """输入源选择。mediapipe = E-000 用的 538 维；rtm = Uni-Sign 对齐的 207 维。
+
+    两者不可混用：阶段 1 的冻结编码器只认 rtm 这一套（见 D-020）。
+    """
+    return {"mediapipe": PoseSLTDataset, "rtm": RTMPoseSLTDataset}[name]
 
 
 def build_vocab(csv_dir, cache, min_freq=1):
@@ -66,16 +77,22 @@ def main():
     ap.add_argument("--frame-stride", type=int, default=2)
     ap.add_argument("--max-frames", type=int, default=256)
     ap.add_argument("--normalize", default="body", choices=["body", "none"])
+    ap.add_argument("--input", default="mediapipe", choices=["mediapipe", "rtm"],
+                    help="rtm = RTMPose 69 点(207 维)，阶段 1 的冻结编码器只认这个")
     ap.add_argument("--label-smoothing", type=float, default=0.0)
     ap.add_argument("--num-workers", type=int, default=4)
     ap.add_argument("--eval-every", type=int, default=1)
+    ap.add_argument("--seed", type=int, default=1234)
     ap.add_argument("--smoke", action="store_true",
                     help="冒烟模式：只验证流程，结果不得写入 EXPERIMENTS.md")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    torch.manual_seed(1234)
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
 
     if args.train_split == args.eval_split:
         print("!" * 72)
@@ -84,13 +101,15 @@ def main():
         print("!" * 72, flush=True)
 
     vocab = build_vocab(args.csv_dir, os.path.join(args.out, "vocab.json"))
-    print("词表大小 {}（仅由 train.csv 构建）".format(len(vocab)), flush=True)
+    print("词表大小 {}（仅由 train.csv 构建）| 输入源 {}".format(
+        len(vocab), args.input), flush=True)
 
     common = dict(root=args.root, csv_dir=args.csv_dir, vocab=vocab,
                   frame_stride=args.frame_stride, max_frames=args.max_frames,
                   normalize=args.normalize)
-    ds_tr = PoseSLTDataset(split=args.train_split, **common)
-    ds_ev = PoseSLTDataset(split=args.eval_split, **common)
+    DS = pick_dataset(args.input)
+    ds_tr = DS(split=args.train_split, **common)
+    ds_ev = DS(split=args.eval_split, **common)
     print("train[{}] {} 条（缺关键点 {} 条） | eval[{}] {} 条（缺 {} 条）".format(
         args.train_split, len(ds_tr), len(ds_tr.missing),
         args.eval_split, len(ds_ev), len(ds_ev.missing)), flush=True)
@@ -104,9 +123,14 @@ def main():
                        num_workers=args.num_workers, collate_fn=collate_fn,
                        pin_memory=True)
 
-    model = Seq2SeqLSTM(in_dim=ds_tr.dim, vocab_size=len(vocab),
-                        pad_id=CharVocab.PAD, bos_id=CharVocab.BOS,
-                        eos_id=CharVocab.EOS).to(device)
+    # 显式写出来并存进 checkpoint，evaluate.py 据此重建同构模型，
+    # 不依赖"默认值将来不变"这种隐含假设
+    model_cfg = dict(in_dim=ds_tr.dim, vocab_size=len(vocab),
+                     frame_hidden=512, feat_dim=512, enc_hidden=512,
+                     dec_hidden=512, emb_dim=256, enc_layers=2, dropout=0.3,
+                     pad_id=CharVocab.PAD, bos_id=CharVocab.BOS,
+                     eos_id=CharVocab.EOS)
+    model = Seq2SeqLSTM(**model_cfg).to(device)
     n_par = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print("模型参数量 {:.2f}M，输入维度 {}".format(n_par / 1e6, ds_tr.dim), flush=True)
 
@@ -151,7 +175,8 @@ def main():
             if res["bleu4"] > best:
                 best = res["bleu4"]
                 torch.save({"model": model.state_dict(), "args": vars(args),
-                            "epoch": ep, "bleu4": best},
+                            "model_cfg": model_cfg, "epoch": ep,
+                            "dev_bleu4": best},
                            os.path.join(args.out, "best.pt"))
             if ep % (args.eval_every * 5) == 0 or ep == args.epochs:
                 print("  样例  预测: {}\n        参考: {}".format(
