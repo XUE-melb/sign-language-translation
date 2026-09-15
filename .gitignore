@@ -19,3 +19,6 @@ logs/
 
 # 训练产物
 runs/
+
+# 第三方仓库（单独 clone）
+third_party/

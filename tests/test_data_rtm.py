@@ -34,7 +34,7 @@ m[..., 0] = np.random.RandomState(0).uniform(100, 500, (T, N))
 m[..., 1] = np.random.RandomState(1).uniform(100, 500, (T, N))
 m[..., 2] = 0.9
 m[:, 3, 2] = 0.1                       # 第 3 个点置信度低于阈值
-r = crop_scale(m, CONF_THR)
+r, sc = crop_scale(m, CONF_THR)
 print("  输出范围 [{:.3f}, {:.3f}]（应在 [-1,1] 内）".format(r.min(), r.max()))
 print("  低置信度点是否整行清零:", np.all(r[:, 3, :] == 0))
 print("    -> 该点 x/y/conf 三个通道都为 0:", r[:, 3, :].tolist()[0])
@@ -45,7 +45,7 @@ print("=" * 70)
 print("检查 3：bbox 是在整段序列上算的，不是逐帧")
 m2 = m.copy()
 m2[0, :, 0] += 2000                    # 只改第 0 帧，若逐帧归一化则其他帧不受影响
-r2 = crop_scale(m2, CONF_THR)
+r2, _ = crop_scale(m2, CONF_THR)
 changed = not np.allclose(r[1:], r2[1:], atol=1e-5)
 print("  改第 0 帧后，其余帧的结果是否也变了:", changed, "（应为 True）")
 ok &= changed
@@ -65,17 +65,29 @@ print("  build_groups 输出 {} （应为 (T, 69, 3)）".format(feat.shape))
 print("  分段:", {k: v for k, v in spans.items()})
 ok &= feat.shape[1:] == (69, 3)
 
-# 中心化验证：归一化前，手腕相对自身应为原点
+# 最强的验证：**最终输出**里锚点仍应精确在原点。
+# 这正是"只缩放不平移"的可观测后果——若误用各组独立 crop_scale，
+# 锚点会被平移走，这条立刻失败。
 K, S = d["keypoints"], d["scores"]
 for name, idx, anchor in GROUPS:
     if anchor is None:
         continue
-    kp = K[:, idx, :].astype(np.float32)
     a = anchor if anchor >= 0 else len(idx) + anchor
-    centered = kp - kp[:, a:a + 1, :]
-    mx = float(np.abs(centered[:, a, :]).max())
-    print("  {:<11} 锚点(第{}点)中心化后最大绝对值 {:.8f}".format(name, a, mx))
+    s0, s1 = spans[name]
+    anchor_xy = feat[:, s0 + a, :2]
+    mx = float(np.abs(anchor_xy).max())
+    print("  {:<11} 输出中锚点(第{}点)坐标最大绝对值 {:.8f}（应为 0）".format(name, a, mx))
     ok &= mx == 0.0
+
+print()
+print("  各组取值范围（body 应接近铺满 [-1,1]，手/脸不必）:")
+for name, idx, _ in GROUPS:
+    s0, s1 = spans[name]
+    sub = feat[:, s0:s1, :2]
+    nz = sub[np.any(feat[:, s0:s1, :] != 0, axis=-1)]
+    print("    {:<11} [{:+.3f}, {:+.3f}]".format(
+        name, float(nz.min()) if len(nz) else 0.0,
+        float(nz.max()) if len(nz) else 0.0))
 
 print("=" * 70)
 print("检查 5：低置信度点在最终输出里确实为 0")

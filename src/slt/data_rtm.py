@@ -13,7 +13,11 @@
                                                   ------
                                                   69 点
 
-随后每组各自过 crop_scale 归一化到 [-1, 1]。
+归一化（关键，容易想当然写错）：
+    **只有 body 走完整 crop_scale** 并产出一个 scale；
+    left / right / face 共用这个 scale，**只缩放不平移**，再 clip + 掩码。
+    这样手腕/下巴在处理后仍精确位于原点，各部位也保持在同一度量下。
+    若让每组各自 crop_scale，手会被拉伸填满 [-1,1]，手的相对大小丢失。
 """
 import copy
 import csv
@@ -45,7 +49,9 @@ CONF_THR = 0.3                               # 与 Uni-Sign 一致
 
 
 def crop_scale(motion, thr=CONF_THR):
-    """复刻 Uni-Sign 的 crop_scale（源自 MotionBERT）。
+    """复刻 Uni-Sign 的 crop_scale（源自 MotionBERT）。返回 (归一化结果, scale)。
+
+    scale 要交给 left/right/face_all 共用 —— 它们不各自调用本函数。
 
     注意三点，都和直觉不同：
       1. bbox 在**整段序列**上算（跨所有帧、所有关键点），不是逐帧
@@ -55,37 +61,58 @@ def crop_scale(motion, thr=CONF_THR):
     result = copy.deepcopy(motion)
     valid = motion[motion[..., 2] > thr][:, :2]
     if len(valid) < 4:
-        return np.zeros(motion.shape, dtype=np.float32)
+        return np.zeros(motion.shape, dtype=np.float32), 0.0
     xmin, xmax = valid[:, 0].min(), valid[:, 0].max()
     ymin, ymax = valid[:, 1].min(), valid[:, 1].max()
     scale = max(xmax - xmin, ymax - ymin)
     if scale == 0:
-        return np.zeros(motion.shape, dtype=np.float32)
+        return np.zeros(motion.shape, dtype=np.float32), 0.0
     xs = (xmin + xmax - scale) / 2
     ys = (ymin + ymax - scale) / 2
     result[..., :2] = (motion[..., :2] - np.array([xs, ys])) / scale
     result[..., :2] = (result[..., :2] - 0.5) * 2
     result = np.clip(result, -1, 1)
     result[result[..., 2] <= thr] = 0
-    return result.astype(np.float32)
+    return result.astype(np.float32), float(scale)
 
 
 def build_groups(K, S, thr=CONF_THR):
-    """(T,133,2)+(T,133) -> (T,69,3)，按 Uni-Sign 的分组、中心化、归一化。
+    """(T,133,2)+(T,133) -> (T,69,3)，逐行对齐 Uni-Sign 的 load_part_kp。
 
-    返回的点顺序固定为 body / left_hand / right_hand / face，
-    下游（阶段 0 展平、阶段 1 分组喂 GCN）都按这个顺序切片。
+    ⚠️ 只有 body 走完整的 crop_scale 并产出 scale；
+    left / right / face_all **不各自 crop_scale**，而是共用 body 的 scale
+    只做缩放（不平移），再 clip + 掩码。
+
+    这个设计不能想当然改：手和脸已经各自以手腕/下巴为原点，若各自
+    crop_scale，手会被拉伸填满 [-1,1] —— 手的相对大小信息被抹掉，
+    手腕也不再在原点。共用 body 尺度才能让各部位保持在同一度量下。
+
+    返回点顺序固定 body / left / right / face_all，与 Uni-Sign 的
+    ['body','left','right','face_all'] 一致。
     """
     out, spans, off = [], {}, 0
+    scale = None
     for name, idx, anchor in GROUPS:
         kp = K[:, idx, :].astype(np.float32)          # (T, n, 2)
         cf = S[:, idx].astype(np.float32)             # (T, n)
         if anchor is not None:
-            # 中心化只作用于坐标，置信度不参与（Uni-Sign 也是分开处理后再拼接）
+            # 中心化只作用于坐标，置信度不参与
             a = anchor if anchor >= 0 else len(idx) + anchor   # -1 -> 最后一点
             kp = kp - kp[:, a:a + 1, :]
-        part = np.concatenate([kp, cf[..., None]], axis=-1)   # (T, n, 3)
-        out.append(crop_scale(part, thr))
+        motion = np.concatenate([kp, cf[..., None]], axis=-1).astype(np.float32)
+
+        if name == "body":
+            res, scale = crop_scale(motion, thr)
+        else:
+            assert scale is not None, "body 必须排在最前，其余组要用它的 scale"
+            if scale == 0:
+                res = np.zeros_like(motion)
+            else:
+                res = motion.copy()
+                res[..., :2] = res[..., :2] / scale      # 只缩放，不平移
+                res = np.clip(res, -1, 1)
+                res[res[..., 2] <= thr] = 0
+        out.append(res.astype(np.float32))
         spans[name] = (off, off + len(idx))
         off += len(idx)
     return np.concatenate(out, axis=1), spans          # (T, 69, 3)
