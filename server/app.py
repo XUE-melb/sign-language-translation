@@ -86,6 +86,63 @@ async def info():
             "info": {k: str(v) for k, v in tr.info.items()}, "max_frames": tr.max_frames}
 
 
+# ------------------------------------------------------------------ 测试集片段（骨架回放模式）
+
+REPO = os.path.abspath(os.path.join(HERE, ".."))
+POSE_ROOT = os.path.join(REPO, "CE-CSL", "pose_rtm")
+CSV_DIR = os.path.join(REPO, "TFNet", "data", "CE-CSL")
+
+
+def _clip_index():
+    """扫本地有的 pkl（服务器上是全量，本地只拷了部分），配上参考句。私下展示用；关键点不是视频，不出仓库。"""
+    if getattr(app.state, "clips", None) is not None:
+        return app.state.clips
+    import csv
+    refs = {}
+    for split in ("train", "dev", "test"):
+        p = os.path.join(CSV_DIR, split + ".csv")
+        if os.path.exists(p):
+            for r in csv.DictReader(open(p, encoding="utf-8")):
+                refs[r["Number"].strip()] = r["Chinese Sentences"].strip()
+    clips = []
+    for split in ("test", "dev", "train"):
+        d = os.path.join(POSE_ROOT, split)
+        if not os.path.isdir(d):
+            continue
+        for signer in sorted(os.listdir(d)):
+            sd = os.path.join(d, signer)
+            if not os.path.isdir(sd):
+                continue
+            for fn in sorted(os.listdir(sd)):
+                if fn.endswith(".pkl"):
+                    num = fn[:-4]
+                    clips.append({"number": num, "split": split, "signer": signer,
+                                  "text": refs.get(num, ""), "path": os.path.join(sd, fn)})
+    app.state.clips = clips
+    return clips
+
+
+@app.get("/api/clips")
+async def list_clips(split: str = "test", signer: str = ""):
+    rows = [c for c in _clip_index() if c["split"] == split and (not signer or c["signer"] == signer)]
+    signers = sorted({c["signer"] for c in _clip_index() if c["split"] == split})
+    return {"split": split, "signers": signers, "n": len(rows),
+            "clips": [{k: c[k] for k in ("number", "signer", "text")} for c in rows[:500]]}
+
+
+@app.get("/api/clip/{number}")
+async def get_clip(number: str):
+    hit = next((c for c in _clip_index() if c["number"] == number), None)
+    if hit is None:
+        raise HTTPException(404, "没有这条片段的关键点：{}".format(number))
+    with open(hit["path"], "rb") as f:
+        d = pickle.load(f)
+    K = np.asarray(d["keypoints"], np.float32); S = np.asarray(d["scores"], np.float32)
+    return {"number": number, "split": hit["split"], "signer": hit["signer"], "text": hit["text"],
+            "frames": int(len(K)), "fps": 30,
+            "keypoints": K.round(4).tolist(), "scores": S.round(3).tolist()}
+
+
 # ------------------------------------------------------------------ 三种输入
 
 @app.post("/api/translate")

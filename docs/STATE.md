@@ -101,7 +101,13 @@ E-002 60 轮按 D-025 规则成为正式行（差 0.38 恰过阈值 0.378，1/3 
 - `server/app.py`：FastAPI。`/api/info`、`/api/translate`（JSON 关键点，192 ms）、`/api/translate_pkl`、`/api/translate_video`
   （4.7 s 视频共 25.7 s，其中提取 24.6 s）、WebSocket `/ws/stream`（每 N 帧回部分结果，结束回 n-best）全部实测通过
 - 启动：`set PYTHONPATH=src` 后 `.venv-infer\Scripts\python -m uvicorn server.app:app --port 8000`；环境变量 `SLT_RUN` 指定训练产物目录
-- **未做**：页面 `server/static/index.html`、端侧 rtmlib 客户端（摄像头 → WebSocket）、agent 层、onnxruntime-gpu（摄像头实时才需要）
+- `server/static/index.html`（09-17 01:30）：UI/UX Pro Max 生成设计系统（`design-system/slt-demo/MASTER.md`，Flat Design，
+  深浅两套令牌）。三种输入：测试集骨架回放（逐帧推 WebSocket，部分结果流式出字）、上传视频、浏览器摄像头录制
+  （走上传同一路径，含示范骨架"跟打"）；n-best + 置信度条；Agent 面板规则版（置信度门控 τ、确认/重打、对话记录）。
+  `/api/clips`、`/api/clip/{number}` 读本地 pkl。无头 Chromium 实测：回放→推流→最终译文与参考句一致，
+  375px 无横向滚动，触控目标全部 ≥44px，无控制台报错（`scratchpad/page_test.py`）
+- **未做**：agent 的 LLM 重排 + 两行评测（Anthropic SDK；写前先读 claude-api skill）、独立端侧 Python 客户端
+  （摄像头 → WebSocket 实时，现由页面录制上传代替）、onnxruntime-gpu（实时才需要）、录像、README 截图（用自录片段）
 
 本人并行做：跟数据集视频学三五句手语（句子待 E-002 预测里挑）；读模型讲解；过 DECISIONS 的追问清单。
 
@@ -131,8 +137,8 @@ E-002 60 轮按 D-025 规则成为正式行（差 0.38 恰过阈值 0.378，1/3 
 | `tests/probe_zeroshot.py` / `probe_control.py` | 零样本探针 / 全零-打乱对照 |
 | 其余 | 见 D-021/D-022，未变 |
 
-已写（软件线）：`src/slt/infer.py`、`src/slt/pose_extract.py`、`server/app.py`。待写：`server/static/index.html`、
-`client/`（rtmlib 关键点流）、`agent/`（工具循环 + 评测脚本）。
+已写（软件线）：`src/slt/infer.py`、`src/slt/pose_extract.py`、`server/app.py`、`server/static/index.html`、
+`design-system/slt-demo/MASTER.md`。待写：`agent/`（工具循环 + 评测脚本）、可选 `client/`（实时关键点流）。
 
 ---
 

@@ -57,6 +57,23 @@ BLEU-4 为 3 seed 均值 ± std，ROUGE 列为 ROUGE-L，greedy 解码；阶段 
 - **手部检出率低不是 bug**：部分手语者的拍摄取景导致手在静止时垂出画面，
   是数据固有属性，调模型参数修不动（D-005）
 
+## 本地 demo（B / C / D 三层接线，D-027）
+
+```
+set PYTHONPATH=src
+.venv-infer\Scripts\python -m uvicorn server.app:app --port 8000     # 浏览器打开 http://127.0.0.1:8000
+```
+
+| 层 | 实现 | 说明 |
+|----|------|------|
+| B 服务端 | `server/app.py`（FastAPI） | 常驻进程持有模型；`/api/translate`、`/api/translate_video`、WebSocket `/ws/stream` |
+| C 端侧 | 页面内置回放 + 浏览器录制 | 关键点逐帧经 WebSocket 推送，**传坐标不传画面**；上传/录制模式由服务端 rtmlib 提关键点 |
+| D agent | 页面 Agent 面板 | 置信度门控（规则版）：平均 token 概率低于阈值就向手语者确认；LLM 重排待接入 |
+
+页面三种输入：测试集骨架回放（私下展示用，只播关键点不播视频）、上传视频、摄像头录制。
+推理封装 `src/slt/infer.py` 把 LoRA 合并进 mT5 主干，接口 `translate((T,207)) -> [(text, logprob)]`，
+本地 RTX 5060 上每条约 0.2 s。设计系统由 UI/UX Pro Max 生成，见 `design-system/slt-demo/MASTER.md`。
+
 ## 文档
 
 | 文件 | 内容 |
