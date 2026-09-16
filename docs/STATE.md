@@ -92,6 +92,17 @@ E-002 60 轮按 D-025 规则成为正式行（差 0.38 恰过阈值 0.378，1/3 
 | 09-23 至 09-25 | | 本人自录三五句、跟打模式、README |
 | 09-26 至 09-27 | 撤出实例 | 录像、收尾 |
 
+**软件线已完成（09-17 00:45，本地 5060 实测）**：
+- `.venv-infer`：Python 3.13、torch 2.11+cu128、transformers 4.57.6、peft 0.21、rtmlib、onnxruntime 1.30（CPU）、fastapi
+- `src/slt/infer.py`：`Translator`，LoRA 合并进主干，n-best + 长度归一化对数概率；E 的 8 条 test 片段 beam4 首选与服务器**逐字一致**；
+  加载 6.7 s，显存 2.35 GB，每条 0.2 s
+- `src/slt/pose_extract.py`：rtmlib 封装，设置与 `scripts/extract_rtmpose.py` 逐项一致；CPU 0.17 s/帧；同一视频本地提取的
+  关键点与服务器版平均差 2e-4，翻译相同
+- `server/app.py`：FastAPI。`/api/info`、`/api/translate`（JSON 关键点，192 ms）、`/api/translate_pkl`、`/api/translate_video`
+  （4.7 s 视频共 25.7 s，其中提取 24.6 s）、WebSocket `/ws/stream`（每 N 帧回部分结果，结束回 n-best）全部实测通过
+- 启动：`set PYTHONPATH=src` 后 `.venv-infer\Scripts\python -m uvicorn server.app:app --port 8000`；环境变量 `SLT_RUN` 指定训练产物目录
+- **未做**：页面 `server/static/index.html`、端侧 rtmlib 客户端（摄像头 → WebSocket）、agent 层、onnxruntime-gpu（摄像头实时才需要）
+
 本人并行做：跟数据集视频学三五句手语（句子待 E-002 预测里挑）；读模型讲解；过 DECISIONS 的追问清单。
 
 ---
@@ -120,7 +131,7 @@ E-002 60 轮按 D-025 规则成为正式行（差 0.38 恰过阈值 0.378，1/3 
 | `tests/probe_zeroshot.py` / `probe_control.py` | 零样本探针 / 全零-打乱对照 |
 | 其余 | 见 D-021/D-022，未变 |
 
-待写（软件线）：`src/slt/infer.py`（合并 LoRA、置信度）、`server/`（FastAPI + WebSocket + 页面）、
+已写（软件线）：`src/slt/infer.py`、`src/slt/pose_extract.py`、`server/app.py`。待写：`server/static/index.html`、
 `client/`（rtmlib 关键点流）、`agent/`（工具循环 + 评测脚本）。
 
 ---

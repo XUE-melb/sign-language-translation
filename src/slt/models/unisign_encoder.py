@@ -32,7 +32,13 @@ import sys
 import torch
 import torch.nn as nn
 
-UNISIGN_DIR = "/root/autodl-tmp/slt/third_party/Uni-Sign"
+# Uni-Sign 仓库位置：环境变量 SLT_UNISIGN_DIR > 仓库根下 third_party/Uni-Sign > 服务器绝对路径。
+# 本地 demo 只需要其中的 stgcn_layers 包（D-027）。
+_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+UNISIGN_DIR = next((d for d in (os.environ.get("SLT_UNISIGN_DIR"),
+                                os.path.join(_REPO, "third_party", "Uni-Sign"),
+                                "/root/autodl-tmp/slt/third_party/Uni-Sign")
+                    if d and os.path.isdir(d)), "/root/autodl-tmp/slt/third_party/Uni-Sign")
 if UNISIGN_DIR not in sys.path:
     sys.path.insert(0, UNISIGN_DIR)
 
