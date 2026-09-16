@@ -6,8 +6,8 @@
 CNN + LSTM seq2seq，到 gloss-free + 冻结 LLM 解码器，每次只换一个组件，
 量化每一代技术各自贡献了多少。
 
-> 状态：**进行中**。数据预处理完成，阶段 0 / 阶段 1 正在 D-022 纠错后的协议下重跑（见 docs/STATE.md）。
-> 下表为空即表示尚无结果 —— 不会先填数字再补实验。
+> 状态：**进行中**。阶段 0–2 已完成（各 3 seed，test 集 500 条），阶段 3 与本地 demo 进行中（见 docs/STATE.md）。
+> 表中的横线表示尚无结果 —— 不会先填数字再补实验。
 
 ## 任务
 
@@ -18,10 +18,15 @@ CNN + LSTM seq2seq，到 gloss-free + 冻结 LLM 解码器，每次只换一个�
 
 | 阶段 | 改动 | BLEU-4 | ROUGE |
 |------|------|--------|-------|
-| 0 | 老架构 baseline：逐帧 MLP（关键点输入，见 D-013）+ BiLSTM + attention-LSTM 解码器 | — | — |
-| 1 | 只换视觉编码器：→ 冻结的 Uni-Sign pose 编码器（D-020） | — | — |
-| 2 | 只换解码器：LSTM → LLM + 可训练投影层 | — | — |
-| 3 | 把关键点拆成身体/双手/面部多流各自编码 + 跨模态融合（D-019 重新解释） | — | — |
+| 0 | 老架构 baseline：逐帧 MLP（关键点输入，见 D-013）+ BiLSTM + attention-LSTM 解码器 | 1.13 ± 0.15 | 20.38 |
+| 1 | 只换视觉编码器：→ 冻结的 Uni-Sign pose 编码器（CSL-Daily 微调版，D-020 / D-024） | 3.76 ± 0.29 | 29.61 |
+| 2 | 只换解码器：LSTM → mT5-base（冻结）+ LoRA r=16 + 可训练投影层 | **16.40 ± 0.38** | **46.92** |
+| 3 | 放开视觉编码器端到端适配（D-026；原多流定义因编码器已含多流融合而失效） | — | — |
+
+BLEU-4 为 3 seed 均值 ± std，ROUGE 列为 ROUGE-L，greedy 解码；阶段 2 在 beam=4 下为 17.40 ± 0.18。
+相邻两行配对 bootstrap（1000 次）三 seed 均 p<0.001。**阶段 1、2 借用了 Uni-Sign 在 CSL-Daily 上微调过的
+编码器与 mT5**（D-024）：该系统不训练直接跑 CE-CSL 的零样本 dev BLEU-4 为 3.09，适配训练后 dev 16.2，
+差值是本项目自己的贡献。gloss-free、单数据集、signer-dependent 官方划分，与文献榜单不可直接比较。
 
 完整记录见 [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md)。
 
