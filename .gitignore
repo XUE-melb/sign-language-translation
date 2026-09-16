@@ -22,3 +22,9 @@ runs/
 
 # 第三方仓库（单独 clone）
 third_party/
+
+# 模型权重（Uni-Sign CC-BY-NC-4.0，不入仓库；本地 demo 用）
+weights/
+*.pth
+*.safetensors
+*.onnx
