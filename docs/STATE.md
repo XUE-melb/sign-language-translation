@@ -2,7 +2,7 @@
 
 **新会话从这里开始读。** 然后读 `CLAUDE.md`、`docs/DECISIONS.md`、`docs/EXPERIMENTS.md`。
 
-最后更新：2026-09-16 10:30（北京时间）
+最后更新：2026-09-16 11:00（北京时间）
 
 ---
 
@@ -27,14 +27,13 @@ ssh autodl                      # 已配置免密
 | 用途 | 解释器 | 启动方式 |
 |------|--------|---------|
 | MediaPipe 提取 | `.venv-pose/bin/python` | 直接调 |
-| RTMPose 提取 | `.venv-rtmpose/bin/python` | **必须经 `scripts/run_rtmpose.sh`**（设 LD_LIBRARY_PATH，否则 onnxruntime 静默退回 CPU，慢 90 倍） |
+| RTMPose 提取 | `.venv-rtmpose/bin/python` | **必须经 `scripts/run_rtmpose.sh`** |
 | 训练 / 评测 | `/root/miniconda3/bin/python` | 登录 shell 里就是 `python`，需 `PYTHONPATH=src` |
 
-### ssh 执行命令必须用登录 shell
+训练环境已装 **transformers 4.57.6 / peft 0.20.0 / sentencepiece**。
+**transformers 钉 <5**：5.x 要 torch ≥ 2.5，torch 2.3 不动（D-003）。
 
-`ssh autodl 'bash -lc "python -V"'` 对；`ssh autodl 'python -V'` 错（conda 不在 PATH）。
-
-### 长任务一律放 tmux 会话 `work`
+### ssh 执行命令必须用登录 shell；长任务一律放 tmux 会话 `work`
 
 ---
 
@@ -42,90 +41,87 @@ ssh autodl                      # 已配置免密
 
 | 行 | 阶段 | test BLEU-4 | ROUGE-L | 状态 |
 |----|------|---:|---:|------|
-| E-000 | 0（MediaPipe 输入，旧协议） | 1.41 ± 0.15 | 20.86 | 历史记录，**不是第 0 行** |
+| E-000 | 0（MediaPipe 输入，旧协议） | 1.41 ± 0.15 | 20.86 | 历史记录 |
 | **E-000b** | 0（RTMPose 输入） | **1.13 ± 0.15** | 20.38 | ✅ 第 0 行 |
-| **E-001** | 1 只换编码器 | **3.28 ± 0.36** | 27.44 | ✅ 配对 bootstrap 3/3 p<0.001 |
-| E-002 | 2 只换解码器 | — | — | **设计未定，阻塞** |
-| E-003 | 3 多流融合 | — | — | 未开始 |
+| E-001 | 1 冻结 stage-1 编码器 | 3.28 ± 0.36 | 27.44 | ✅ bootstrap 3/3 p<0.001 |
+| **E-001b** | 1 冻结 **CSL-Daily** 编码器 | — | — | 🔄 跑中（路线 B 要求编码器与 E-002 一致） |
+| **E-002** | 2 只换解码器：CSL-Daily mT5 + LoRA r=16 + pose_proj | — | — | 🔄 排队 |
+| E-003 | 3 | — | — | **定义待重议**（见 D-024 第五节） |
 
-统一协议（D-017 + D-022 + D-023）：RTMPose lightweight 69 点，Uni-Sign 预处理，
-frame_stride=1，max_frames=256，**lr=1e-4 恒定、无 scheduler**，epochs=100，batch=16，
-3 seed（1234/2345/3456），dev 选 best.pt，test 只评一次，greedy max_len=60。
+参照：Uni-Sign CSL-Daily 版**零样本**（不训练）dev BLEU-4 **3.09**；stage-1 版零样本 **0.27**（贴地板，只会说新闻）。
 
 ---
 
 ## 三、正在跑什么
 
-**没有后台任务在跑。** 链路 09-16 04:00 完成（`logs/chain.log` 末尾 `CHAIN DONE`），
-结果已全部写入 EXPERIMENTS.md / DECISIONS.md D-023。GPU 空闲。
+**`tmux work:s2chain` 跑 `scripts/run_stage2_chain.sh`**（09-16 11:00 启动），
+接管手动启动的 E-001b s1234（`tmux work:s2`）后依次：E-001b s2345/s3456 → 3 个 test 评测
+→ E-002 3 seed（30 epoch，约 66 分钟/趟）→ test（greedy + beam4）→ 汇总。
+
+预计 **09-16 16:30** 打出 `STAGE2 CHAIN DONE`。
+查进度：`ssh autodl 'grep "^\[" /root/autodl-tmp/slt/logs/stage2_chain.log | tail'`
+
+**跑完后要做**：E-001b / E-002 入 EXPERIMENTS.md；配对 bootstrap（`scripts/paired_bootstrap.py`，
+注意 E-002 的预测文件名是 `predictions_test_greedy.csv`）；**单独报"零样本 3.09 → E-002"的差值**
+（那是我们适配训练的贡献）；检查 E-002 dev 曲线到 30 轮是否还在涨。
 
 ---
 
-## 四、下一步：阶段 2 设计（需要本人拍板的三件事）
+## 四、D-024 的要点（新会话必读）
 
-阶段 2 = 只换解码器（LSTM → mT5 + 可训练投影层），视觉端不动（= E-001 的冻结 Uni-Sign 编码器）。
-投影层是 CLAUDE.md 点名要本人逐行讲的部分。
-
-| 决定 | 选项 | 倾向与理由 |
-|------|------|-----------|
-| ① mT5 来源 | (a) Uni-Sign checkpoint 里的 mT5（已在 CSL-News 手语→文本上调过）<br>(b) HF 原版 mT5-base | 倾向 (b)：项目论点是"两代技术对比"，不是复现 Uni-Sign；用 (a) 则"换了解码器"和"借了别人训好的翻译器"分不开。但 (a) 数字会好看得多，本人拍板 |
-| ② 冻结还是 LoRA | (a) 冻结 mT5 只训投影层（CLAUDE.md 原文）<br>(b) LoRA | 先跑 (a) 作 E-002，不行再加 (b) 作 E-002b，不需要现在定死 |
-| ③ 投影层接法 | 阶段 1 编码器输出 1024 → 投影 → mT5 d_model 768 | Uni-Sign 的 `pose_proj` Linear(1024→768) 已在权重里可作起点（若选 ① (b) 则只借结构不借权重） |
-
-前置工程：训练环境要装 `transformers`（注意 pip 前 unset proxy，D-003 的教训）；
-HF 下载 mT5-base 要 `source /etc/network_turbo`。
-
-**解码方式**（greedy / beam）要在阶段 2 前专门定一次，写 D 条目。目前所有结果都是 greedy max_len=60。
+- 本人选定阶段 2 用 Uni-Sign 的 mT5（路线 (a)）。零样本探针表明 **stage-1 checkpoint 拿来贴地板**
+  （域偏移，输出新闻），**CSL-Daily 微调版零样本 3.09**，故整套用 CSL-Daily 版 = 路线 B。
+- 编码器因此也换成 CSL-Daily 版，**E-001 需重跑为 E-001b**，否则 E-001→E-002 同时换两样。
+- 混搭（stage-1 编码器 + CSL-Daily 解码器）零样本 1.08，出局。
+- E-002 与 D-017 协议的三处偏离已写明：epochs 30、batch 8、label_smoothing 0。
+- **面试表述**：阶段 1、2 借了同一个同域微调过的预训练系统的两半；零样本→E-002 的差值才是我们的贡献。
 
 ---
 
-## 五、已完成的代码资产
+## 五、代码资产
 
 | 文件 | 作用 |
 |------|------|
-| `src/slt/models/decoder.py` | 所有阶段共用的 LSTM+attention 解码器（D-021） |
-| `src/slt/models/stage0.py` | 逐帧 MLP（含 LayerNorm，D-022）+ BiLSTM |
-| `src/slt/models/stage1.py` | 冻结 Uni-Sign 编码器 + 同一解码器；均值池化初始化 |
-| `src/slt/models/unisign_encoder.py` | 只搭 Uni-Sign pose 分支（4.56M），不加载 mT5 |
-| `src/slt/data_rtm.py` | Uni-Sign 预处理复刻，六项测试 |
-| `src/slt/metrics.py` | BLEU-1..4 / chrF / ROUGE / 打乱配对地板 / 按手语者分层 |
-| `src/slt/train.py` / `evaluate.py` | `--stage {0,1} --input {mediapipe,rtm}`；lr 逐 epoch 落盘 |
-| `scripts/run_chain.sh` | 无人值守链（lr 复查 → 3 seed → test → 汇总） |
-| `scripts/paired_bootstrap.py` | 配对 bootstrap 显著性 |
+| `src/slt/models/unisign_full.py` | Uni-Sign 完整管线（编码器 + pose_proj + mT5），可指定编码器来源 |
+| `src/slt/train_stage2.py` | 阶段 2 训练 / `--test-only` 评测（greedy + beam4） |
+| `tests/probe_zeroshot.py` / `probe_control.py` | 零样本探针 / 全零-打乱对照 |
+| `scripts/run_stage2_chain.sh` | 路线 B 无人值守链 |
+| `scripts/paired_bootstrap.py` | 配对 bootstrap |
+| 其余 | 见 D-021/D-022，未变 |
 
 ---
 
 ## 六、未解决的问题
 
-### 阻塞阶段 2 开工
-见第四节的三个决定。
+### 阶段 3 定义（阻塞阶段 3）
+Uni-Sign 编码器已含多流分组与融合，D-019 的阶段 3 定义失效。候选：放开编码器端到端适配 /
+加 MediaPipe 92 点面部流 / RGB 流。等 E-002 出结果再定。
 
 ### 记录在案、暂不修
-- 零填充 vs Uni-Sign"重复末帧"：只污染阶段 1 每序列末 2 帧（D-022）
-- 超长抽样确定性 linspace vs Uni-Sign 每轮随机（D-022，有意偏离）
-- LayerNorm 的单独效应未测（D-023）；`--normalize none` / stride 对照未做
-- F、I 两位手语者 BLEU-4 在阶段 1 持平而 ROUGE-L 上升，原因未查（D-023）
-- C 层（端侧 MediaPipe）与 B 层输入（RTMPose 格式）不一致，未定
-- RTMPose 对画外手会外推 conf>0.3，D-005 的叙事应改成"依赖提取器"
+- 原版 mT5（路线 (b)）未实测，是一个可补的对照行
+- E-000b/E-001 的 LayerNorm 单独效应未测；`--normalize none` / stride 对照未做
+- F、I 在阶段 1 BLEU-4 持平、ROUGE-L 上升，原因未查
+- 零填充 vs Uni-Sign"重复末帧"（只污染阶段 1 每序列末 2 帧）
+- C 层（端侧 MediaPipe）与 B 层输入（RTMPose）不一致
+- `weights/mt5-base` 拉了 6.6G（含 tf/flax），只用了 config + spiece.model，可清
 
 ### 欠的账
-| 事项 | 出处 | 状态 |
-|------|------|------|
-| OOV 率 dev 2/4880、test 6/5383 | D-014 | 待本人复核后关账 |
-| CSL-News 均 9.5s / 40 字 | D-001 | **[待核]**，本人未核 |
-| 「申请 CSL-Daily 了吗」 | D-001 | 本人待答 |
-| 三个环境无 requirements 文件 | — | 待补 |
+| 事项 | 状态 |
+|------|------|
+| OOV dev 2/4880、test 6/5383 | 待本人复核后关 D-014 |
+| CSL-News 均 9.5s / 40 字 | [待核] |
+| 「申请 CSL-Daily 了吗」 | 本人待答 |
+| 三个环境无 requirements 文件 | 待补 |
 
 ---
 
-## 七、这个项目的规矩（不是可选项）
+## 七、规矩（不是可选项）
 
-1. `docs/DECISIONS.md`：每个技术决策追加一条，含数据依据、否决方案、代价、面试追问。
-2. `docs/EXPERIMENTS.md`：每次训练评测追加一行。
-3. 冒烟数字绝不进 EXPERIMENTS.md。
-4. 外部数字标 `[待核]`，不凭印象写；**不替本人编决策理由**。
-5. 模型定义、训练循环与 loss、评测指标、数据对齐 —— 本人要能逐行讲。
-6. **预判先写下再看结果**（D-020 → D-023 的教训：被推翻的预判比事后解释可信）。
+1. 每个技术决策进 `DECISIONS.md`，每次实验进 `EXPERIMENTS.md`；冒烟数字不进表。
+2. 外部数字标 `[待核]`；不替本人编决策理由。
+3. 模型定义、训练循环与 loss、评测指标、数据对齐 —— 本人要能逐行讲。
+4. 预判先写下再看结果（D-020→D-023）。
+5. **借来的东西接进流水线前先零样本测一次**（D-024）。
 
 ---
 
@@ -133,10 +129,12 @@ HF 下载 mT5-base 要 `source /etc/network_turbo`。
 
 | 坑 | 解法 |
 |----|------|
-| ssh 套多层引号 / heredoc 超长 | 本地用 Write 落脚本 → scp → 远程执行 |
-| Bash 工具 10 分钟超时 | 长任务进 tmux，轮询查 |
-| `pgrep -f` / `pkill -f` 自匹配 | `pkill -f 'xx[x]'` 或按 PID 杀 |
-| onnxruntime 报 CUDA 可用却跑 CPU | 看 `session.get_providers()` 或直接看耗时 |
-| 对齐第三方模型只读论文/摘要 | 读它的 dataloader 源码：mode、预处理、帧采样各踩一次（D-020/021/022） |
-| 挂在噪声指标上的 scheduler | 不用；lr 逐 epoch 落盘（D-022） |
-| 用参数量代理模型能力 | 预训练数据量才是变量（D-023） |
+| ssh 套多层引号 / heredoc 超长 | Write 落脚本 → scp → 远程执行 |
+| Bash 工具 10 分钟超时 | 长任务进 tmux |
+| `pgrep -f` / `pkill -f` 自匹配 | `'xx[x]'` 或按 PID |
+| onnxruntime 报 CUDA 可用却跑 CPU | 看 `session.get_providers()` |
+| 对齐第三方模型只读论文/摘要 | 读 dataloader 源码（D-020/021/022） |
+| 挂在噪声指标上的 scheduler | 不用；lr 落盘（D-022） |
+| 用参数量代理能力 | 预训练数据量才是变量（D-023） |
+| 装 transformers 5.x 静默禁用 torch 2.3 | 钉 `transformers<5`（D-024） |
+| 借来的 checkpoint 默认能用 | 先零样本测；两个 checkpoint 差 10 倍（D-024） |
