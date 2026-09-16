@@ -128,7 +128,10 @@ class RTMPoseSLTDataset(Dataset):
     """与 PoseSLTDataset 接口一致，便于 train.py 直接切换。"""
 
     def __init__(self, root, csv_dir, split, vocab, frame_stride=2,
-                 max_frames=256, conf_thr=CONF_THR, **_ignored):
+                 max_frames=256, conf_thr=CONF_THR, only_translators=None,
+                 exclude_translators=None, **_ignored):
+        # only_translators / exclude_translators：按 Translator 列筛选，留一手语者实验（D-026）用。
+        # 缺 pkl 的统计只针对筛选后保留的条目。
         self.pose_root = os.path.join(root, "pose_rtm")
         self.split = split
         self.vocab = vocab
@@ -144,6 +147,10 @@ class RTMPoseSLTDataset(Dataset):
         self.items, self.missing = [], []
         for r in rows:
             num, tr = r["Number"].strip(), r["Translator"].strip()
+            if only_translators and tr not in only_translators:
+                continue
+            if exclude_translators and tr in exclude_translators:
+                continue
             p = os.path.join(self.pose_root, split, tr, num + ".pkl")
             if not os.path.exists(p):
                 self.missing.append(num)

@@ -2,7 +2,7 @@
 
 **新会话从这里开始读。** 然后读 `CLAUDE.md`、`docs/DECISIONS.md`、`docs/EXPERIMENTS.md`。
 
-最后更新：2026-09-16 17:00（北京时间）
+最后更新：2026-09-16 22:30（北京时间）
 
 ---
 
@@ -51,28 +51,32 @@ RTX 5060 8 GB、Core Ultra 7 265K、47 GB 内存、Python 3.13。需要单独的
 | **E-000b** | 0（RTMPose 输入） | **1.13 ± 0.15** | 20.38 | ✅ 第 0 行 |
 | E-001 | 1 冻结 stage-1 编码器 | 3.28 ± 0.36 | 27.44 | 附加行："同域微调对编码器值多少" |
 | **E-001b** | 1 冻结 **CSL-Daily** 编码器 | **3.76 ± 0.29** | 29.61 | ✅ 第 1 行，bootstrap 3/3 p<0.001 |
-| **E-002** | 2 只换解码器：CSL-Daily mT5 + LoRA r=16 + pose_proj，30 轮 | **16.40 ± 0.38** | 46.92 | ✅ 第 2 行，bootstrap 3/3 p<0.001；beam4 17.40 |
-| E-002 60 轮 | 同上，延长跑 | — | — | 🔄 跑中，约 09-16 22:00；表的替换规则见 D-025 |
-| E-003 | 3 放开编码器端到端 | — | — | 09-17 起，D-026 |
-| E-004 | 留一手语者 E（不进消融表） | — | — | 09-17，D-026 |
+| **E-002** | 2 只换解码器：CSL-Daily mT5 + LoRA r=16 + pose_proj，**60 轮** | **16.79 ± 0.23** | 47.50 | ✅ 第 2 行（D-025 规则替换），bootstrap 3/3 p<0.001；beam4 17.74 |
+| E-002 30 轮 | 同上，D-024 预登记协议 | 16.40 ± 0.38 | 46.92 | 保留行；与 60 轮差 0.38，噪声量级 |
+| E-003 | 3 放开编码器端到端（60 轮） | — | — | 🔄 链路跑中（22:12 起），约 09-17 09:30 出；D-026 |
+| E-004 | 留一手语者 E（不进消融表） | — | — | 🔄 链路第一步，约 09-17 00:30 出；D-026 |
 
-参照：Uni-Sign CSL-Daily 版**零样本** dev 3.09 → E-002 dev 峰值 16.2，差值是本项目的适配贡献。
+参照：Uni-Sign CSL-Daily 版**零样本** dev 3.09 → E-002 dev 峰值 16.7–17.0，差值是本项目的适配贡献。
 
 ---
 
 ## 三、正在跑什么
 
-**`tmux work:ext` 跑 `scripts/ext_e002.sh`**（09-16 15:48 启动）：E-002 同配置 60 轮 × 3 seed，
-顺序 1234 → 2345 → 3456，每 seed 约 2 小时 + test（greedy + beam4）。日志 `logs/ext_e002.log`，
-产物 `runs/E002_lora16_ep60_s*`，结束打 `EXT DONE`（约 22:00）。要停：`tmux kill-window -t work:ext`。
+**`tmux work:s3chain` 跑 `scripts/run_stage3_chain.sh`**（09-16 22:12 启动，日志 `logs/stage3_chain.log`）：
 
-查进度：`ssh autodl 'grep "^\[" /root/autodl-tmp/slt/logs/ext_e002.log | tail -3'`
+1. E-004 留一手语者 E：E-002 配置 60 轮 seed 1234，train/dev 去掉 E → 标准 test + `--eval-signer E`
+   在 E 的 600 条上评（产物 `runs/E004_holdoutE_s1234/eval_signerE_{greedy,beam4}.json`）。约 00:30 出。
+2. E-003 编码器 lr 探针：seed 1234，`--unfreeze-encoder --encoder-lr 1e-4` 与 `1e-5` 各 60 轮（约 2.2 小时/趟）。
+3. 按 seed 1234 的 dev 峰值选 lr，补 seed 2345 / 3456，三 seed test；落选探针也评 test 留档。
+4. 汇总，打 `STAGE3 CHAIN DONE`，约 **09-17 09:30**。要停：`tmux kill-window -t work:s3chain`。
 
-**跑完后要做**：按 D-025 的规则决定 60 轮行是否替换 30 轮行（均值高出 > 0.38 则替换，30 轮行保留标注）；
-入 EXPERIMENTS.md；定 E-003 的 epochs。
+查进度：`ssh autodl 'grep "^\[" /root/autodl-tmp/slt/logs/stage3_chain.log | tail -3'`
 
-主链与后处理已完成：`logs/stage2_chain.log`（STAGE2 CHAIN DONE 15:37）、`logs/post_stage2.log`（POST DONE 15:48）、
-`runs/stage2_summary.md`。
+**跑完后要做**：E-003 三行入表（含探针）；E-004 两格对比入 EXPERIMENTS（与 E-002 在 E 的 test-54 上的 15.88 / 60 轮 17.6 对比）；
+按 D-026 决定 demo 摄像头模式；D-026 补结论；README 第 3 行。
+
+已完成的链路：`logs/stage2_chain.log`（15:37）、`logs/post_stage2.log`（15:48）、`logs/ext_e002.log`（EXT DONE 21:50）。
+E-002 60 轮按 D-025 规则成为正式行（差 0.38 恰过阈值 0.378，1/3 seed 显著，噪声量级）。
 
 ---
 
@@ -82,7 +86,7 @@ RTX 5060 8 GB、Core Ultra 7 265K、47 GB 内存、Python 3.13。需要单独的
 
 | 日期 | 模型线（远程 4090） | 软件线（本地 5060） |
 |---|---|---|
-| 09-17 | E-003 lr 探针 {1e-4, 1e-5} → 3 seed；E-004 留 E | 推理封装：合并 LoRA、导出置信度、新 torch；FastAPI |
+| 09-17 | 链路已在跑（22:12 起）：E-004 → E-003 探针 → 3 seed，约 09:30 完 | 推理封装：合并 LoRA、导出置信度、新 torch；FastAPI |
 | 09-18 | 四行表定稿、文档 | WebSocket + 骨架页面 + 上传视频模式 |
 | 09-19 至 09-22 | 可补 E-004 变体（E-003 配置 / 留 A） | agent 工具循环（Anthropic SDK 手写）+ 两行评测 |
 | 09-23 至 09-25 | | 本人自录三五句、跟打模式、README |
@@ -94,7 +98,8 @@ RTX 5060 8 GB、Core Ultra 7 265K、47 GB 内存、Python 3.13。需要单独的
 
 ## 五、D-025 / 026 / 027 要点（新会话必读）
 
-- **D-025**：E-002 30 轮未收敛（峰值在 ep29/30），预登记规则触发 → 60 轮延长跑。表的规则写在结果前。
+- **D-025**：E-002 30 轮未收敛（峰值在 ep29/30），预登记规则触发 → 60 轮延长跑。表的规则写在结果前；
+  结果 60 轮 16.79 vs 30 轮 16.40，差 0.3836 > 阈值 0.3782，按规则替换，两行都保留。曲线 45 轮饱和，60 轮封顶。
   原版 mT5 对照行本人砍掉（秋招时间压力）。
 - **D-026**：阶段 3 = 放开编码器（单变量：编码器是否更新）。E-004 留一手语者 E，在 E 的全部 600 条上评，
   与 E-002 在 E 的 54 条 test 上的 15.88 对比（同为没见过的句子，只差手语者）；决定 demo 摄像头模式开不开。
@@ -109,8 +114,8 @@ RTX 5060 8 GB、Core Ultra 7 265K、47 GB 内存、Python 3.13。需要单独的
 | 文件 | 作用 |
 |------|------|
 | `src/slt/models/unisign_full.py` | Uni-Sign 完整管线（编码器 + pose_proj + mT5），可指定编码器来源 |
-| `src/slt/train_stage2.py` | 阶段 2 训练 / `--test-only` 评测（greedy + beam4）；无 resume |
-| `scripts/run_stage2_chain.sh` / `post_stage2.sh` / `ext_e002.sh` | 路线 B 主链 / 后处理 / 60 轮延长 |
+| `src/slt/train_stage2.py` | 阶段 2/3 训练 / `--test-only` 评测（greedy + beam4）；`--unfreeze-encoder --encoder-lr`（阶段 3）、`--exclude-signer` / `--eval-signer`（E-004）；无 resume |
+| `scripts/run_stage2_chain.sh` / `post_stage2.sh` / `ext_e002.sh` / `run_stage3_chain.sh` | 路线 B 主链 / 后处理 / 60 轮延长 / 阶段 3 + E-004 链 |
 | `scripts/paired_bootstrap.py` | 配对 bootstrap（E-002 的预测文件名带 `_greedy` 后缀，post 脚本已建软链） |
 | `tests/probe_zeroshot.py` / `probe_control.py` | 零样本探针 / 全零-打乱对照 |
 | 其余 | 见 D-021/D-022，未变 |
@@ -123,7 +128,7 @@ RTX 5060 8 GB、Core Ultra 7 265K、47 GB 内存、Python 3.13。需要单独的
 ## 七、未解决的问题
 
 ### 阻塞
-- E-003 编码器 lr 未定（探针后定）；epochs 跟随 D-025 结论。
+- E-003 编码器 lr 由链路按 seed 1234 的 dev 峰值自动选定；epochs=60（D-025 结论）。
 
 ### 记录在案、暂不修
 - 原版 mT5（路线 (b)）已砍；只训 pose_proj 无 LoRA、label_smoothing 0.2 的对照未做

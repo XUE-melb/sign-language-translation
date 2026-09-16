@@ -1,19 +1,30 @@
-"""阶段 2：只换解码器 —— 冻结 Uni-Sign 编码器 + mT5（+LoRA）+ 可训练 pose_proj。
+"""阶段 2 / 阶段 3：Uni-Sign 编码器 + mT5（+LoRA）+ 可训练 pose_proj。
 
-相对 E-001 只改了一件事：LSTM 解码器 -> mT5。视觉端仍是同一个冻结编码器，
+阶段 2（默认）相对 E-001b 只改了一件事：LSTM 解码器 -> mT5。视觉端仍是同一个冻结编码器，
 输入同一批 pkl、同一套预处理、同一个 frame_stride / max_frames。
 
 可训练的部分（--lora-r 0 时只有 pose_proj，即 CLAUDE.md 原文的 LLaVA 式）：
     pose_proj      Linear(1024 -> 768)，从 checkpoint 初始化（不是从零）
     LoRA on mT5    q/k/v/o，r=--lora-r，默认 16
-编码器与 mT5 主干冻结。编码器强制 eval()（BatchNorm 统计量不能被更新，D-021）。
+编码器与 mT5 主干冻结。冻结的编码器强制 eval()（BatchNorm 统计量不能被更新，D-021）。
 
-评测口径与前两个阶段一致：dev 选点用 greedy（和 E-001 同口径），
+阶段 3（D-026）：--unfreeze-encoder。相对阶段 2 唯一的变量是"视觉编码器是否更新"：
+编码器 4.56M 参数加入优化器（单独学习率 --encoder-lr），并随 model.train() 进入训练模式
+（BatchNorm 统计量更新），与 Uni-Sign 自己的微调方式一致。best 目录多存一个 encoder.pt。
+
+E-004 留一手语者（D-026）：--exclude-signer X 让 train 与 dev 都去掉手语者 X；
+评测时 --test-only DIR --eval-signer X 在 X 的 train+dev+test 全部片段上评一次
+（对留出者来说全是没见过的手语者 + 没见过的句子），并单独报其中原 test 划分的部分。
+
+评测口径与前两个阶段一致：dev 选点用 greedy（和 E-001b 同口径），
 test 同时报 greedy 与 beam4（后者是 Uni-Sign 的设置）。指标走 slt.metrics。
 
 用法：
   训练：python -m slt.train_stage2 --out runs/E002_s1234 --seed 1234
   test： python -m slt.train_stage2 --test-only runs/E002_s1234
+  阶段 3：python -m slt.train_stage2 --out runs/E003_s1234 --unfreeze-encoder --encoder-lr 1e-5
+  E-004： python -m slt.train_stage2 --out runs/E004_s1234 --exclude-signer E
+          python -m slt.train_stage2 --test-only runs/E004_s1234 --eval-signer E
 """
 import argparse
 import csv
@@ -24,7 +35,7 @@ import time
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import ConcatDataset, DataLoader
 
 from slt.data import CharVocab, collate_fn
 from slt.data_rtm import RTMPoseSLTDataset
@@ -38,8 +49,9 @@ CSVD = "/root/autodl-tmp/slt/TFNet/data/CE-CSL"
 def build_model(args, device):
     model = UniSignFull(ckpt_path=args.unisign_ckpt,
                         load_mt5_weights=not args.hf_mt5).to(device)
-    for p in model.encoder.parameters():          # 视觉端不动
-        p.requires_grad_(False)
+    unfreeze = bool(getattr(args, "unfreeze_encoder", False))
+    for p in model.encoder.parameters():          # 阶段 2 视觉端不动；阶段 3 放开
+        p.requires_grad_(unfreeze)
     for p in model.mt5.parameters():              # 主干冻结
         p.requires_grad_(False)
     if args.lora_r > 0:
@@ -54,9 +66,10 @@ def build_model(args, device):
     return model
 
 
-def set_train_mode(model, training):
+def set_train_mode(model, training, unfreeze=False):
     model.train(training)
-    model.encoder.eval()                          # 冻结编码器永远 eval
+    if not unfreeze:
+        model.encoder.eval()                      # 冻结编码器永远 eval
 
 
 @torch.no_grad()
@@ -79,6 +92,8 @@ def save_best(model, out, args, epoch, dev_bleu4):
     torch.save(model.pose_proj.state_dict(), os.path.join(d, "pose_proj.pt"))
     if args.lora_r > 0:
         model.mt5.save_pretrained(os.path.join(d, "lora"))
+    if getattr(args, "unfreeze_encoder", False):
+        torch.save(model.encoder.state_dict(), os.path.join(d, "encoder.pt"))
     json.dump({"epoch": epoch, "dev_bleu4": dev_bleu4, "args": vars(args)},
               open(os.path.join(d, "meta.json"), "w", encoding="utf-8"),
               ensure_ascii=False, indent=2)
@@ -91,7 +106,33 @@ def load_best(model, out, args):
         from peft import PeftModel
         base = model.mt5.get_base_model() if hasattr(model.mt5, "get_base_model") else model.mt5
         model.mt5 = PeftModel.from_pretrained(base, os.path.join(d, "lora"))
+    enc = os.path.join(d, "encoder.pt")
+    if os.path.exists(enc):                       # 阶段 3 才有
+        model.encoder.load_state_dict(torch.load(enc, map_location="cpu"))
     return json.load(open(os.path.join(d, "meta.json"), encoding="utf-8"))
+
+
+def _meta(args, meta, split, name):
+    unfreeze = bool(getattr(args, "unfreeze_encoder", False))
+    excl = getattr(args, "exclude_signer", "")
+    return {"split": split, "decode": "{}, max_new_tokens=100".format(name),
+            "epoch": meta["epoch"], "dev_bleu4_at_select": meta["dev_bleu4"],
+            "seed": args.seed, "stage": 3 if unfreeze else 2,
+            "lora_r": args.lora_r, "unfreeze_encoder": unfreeze,
+            "encoder_lr": getattr(args, "encoder_lr", None), "exclude_signer": excl,
+            "unisign_ckpt": os.path.basename(args.unisign_ckpt), "hf_mt5": args.hf_mt5,
+            "protocol": ("留一手语者 {}（train/dev 均去掉）".format(excl) if excl
+                         else "signer-dependent，CE-CSL 官方划分"),
+            "bleu": "sacrebleu tokenize=zh 字级", "rouge": "rouge-chinese 字级"}
+
+
+def _dump(out, tag, res, n, t, h, r):
+    json.dump(res, open(os.path.join(out, "eval_{}.json".format(tag)), "w", encoding="utf-8"),
+              ensure_ascii=False, indent=2)
+    with open(os.path.join(out, "predictions_{}.csv".format(tag)), "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["number", "translator", "hyp", "ref"])
+        w.writerows(zip(n, t, h, r))
 
 
 def run_test(model, args, device, out):
@@ -106,27 +147,49 @@ def run_test(model, args, device, out):
     for name, beams in (("greedy", 1), ("beam4", 4)):
         h, r, t, n = decode_split(model, dl, device, beams)
         res = evaluate(h, r, t, with_floor=True)
-        res["_meta"] = {"split": "test", "decode": "{}, max_new_tokens=100".format(name),
-                        "epoch": meta["epoch"], "dev_bleu4_at_select": meta["dev_bleu4"],
-                        "seed": args.seed, "stage": 2, "lora_r": args.lora_r,
-                        "unisign_ckpt": os.path.basename(args.unisign_ckpt),
-                        "hf_mt5": args.hf_mt5,
-                        "protocol": "signer-dependent，CE-CSL 官方划分",
-                        "bleu": "sacrebleu tokenize=zh 字级", "rouge": "rouge-chinese 字级"}
+        res["_meta"] = _meta(args, meta, "test", name)
         print(format_report(res, "[test · {} · {}]".format(os.path.basename(out), name)))
         print("  输出多样性: {}/{}".format(len(set(h)), len(h)))
-        json.dump(res, open(os.path.join(out, "eval_test_{}.json".format(name)), "w",
-                            encoding="utf-8"), ensure_ascii=False, indent=2)
-        with open(os.path.join(out, "predictions_test_{}.csv".format(name)), "w",
-                  newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(["number", "translator", "hyp", "ref"])
-            w.writerows(zip(n, t, h, r))
+        _dump(out, "test_{}".format(name), res, n, t, h, r)
+    return meta
+
+
+def run_signer_eval(model, args, device, out, meta, signer):
+    """留一手语者评测：在 signer 的 train+dev+test 全部片段上评。
+
+    对 E-004（训练时 --exclude-signer signer）这 600 条全是没见过的手语者 + 没见过的句子；
+    另外单独报其中原 test 划分的那部分，与 E-002 的分手语者表同口径。
+    对没留出该手语者的模型跑这个评测，train 部分是训练数据，数字只作参照。
+    """
+    vocab = CharVocab.build(["x"])
+    parts = [RTMPoseSLTDataset(ROOT, CSVD, sp, vocab, frame_stride=1, max_frames=args.max_frames,
+                               only_translators=[signer]) for sp in ("train", "dev", "test")]
+    ds = ConcatDataset(parts)
+    dl = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=4, collate_fn=collate_fn)
+    seen = getattr(args, "exclude_signer", "") != signer
+    print("留一手语者评测 {}：{} 条（train/dev/test = {}）| 该模型训练时{}见过 {}".format(
+        signer, len(ds), [len(p) for p in parts], "" if seen else "没", signer), flush=True)
+    for name, beams in (("greedy", 1), ("beam4", 4)):
+        h, r, t, n = decode_split(model, dl, device, beams)
+        res = {"all": evaluate(h, r, t, with_floor=True)}
+        idx = [i for i, x in enumerate(n) if x.startswith("test")]
+        if idx:
+            res["test_only"] = evaluate([h[i] for i in idx], [r[i] for i in idx], [t[i] for i in idx],
+                                        with_floor=True)
+        res["_meta"] = _meta(args, meta, "signer-{}-all".format(signer), name)
+        res["_meta"]["signer_seen_in_training"] = seen
+        res["_meta"]["n_all"] = len(h)
+        res["_meta"]["n_test_only"] = len(idx)
+        print(format_report(res["all"], "[signer {} 全部 {} 条 · {}]".format(signer, len(h), name)))
+        if idx:
+            print("  其中原 test 划分 {} 条：BLEU-4 {:.2f}  chrF {:.2f}  R-L {:.2f}".format(
+                len(idx), res["test_only"]["bleu4"], res["test_only"]["chrf"], res["test_only"]["rouge-l"]))
+        _dump(out, "signer{}_{}".format(signer, name), res, n, t, h, r)
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--out", default="", help="输出目录；--test-only 时可省略（默认同 run 目录）")
     ap.add_argument("--seed", type=int, default=1234)
     ap.add_argument("--unisign-ckpt", default=CKPT)
     ap.add_argument("--hf-mt5", action="store_true",
@@ -145,9 +208,19 @@ def main():
     ap.add_argument("--eval-split", default="dev")
     ap.add_argument("--num-workers", type=int, default=4)
     ap.add_argument("--bf16", action="store_true")
+    ap.add_argument("--unfreeze-encoder", action="store_true",
+                    help="阶段 3：视觉编码器参与训练（D-026）")
+    ap.add_argument("--encoder-lr", type=float, default=None,
+                    help="编码器学习率，默认等于 --lr；只在 --unfreeze-encoder 时有意义")
+    ap.add_argument("--exclude-signer", default="",
+                    help="E-004：train 与 dev 都去掉这位手语者（如 E）")
+    ap.add_argument("--eval-signer", default="",
+                    help="与 --test-only 连用：在该手语者的 train+dev+test 全部片段上评")
     ap.add_argument("--test-only", default="", help="给 run 目录，只在 test 上评 best")
     ap.add_argument("--smoke", action="store_true")
     args = ap.parse_args()
+    if not args.test_only and not args.out:
+        ap.error("训练必须给 --out")
 
     device = "cuda"
     random.seed(args.seed); np.random.seed(args.seed)
@@ -158,38 +231,53 @@ def main():
         saved = json.load(open(os.path.join(args.out, "best", "meta.json"), encoding="utf-8"))["args"]
         for k in ("lora_r", "lora_alpha", "lora_dropout", "unisign_ckpt", "hf_mt5", "max_frames", "seed"):
             setattr(args, k, saved[k])
+        for k, dflt in (("unfreeze_encoder", False), ("encoder_lr", None), ("exclude_signer", "")):
+            setattr(args, k, saved.get(k, dflt))      # 旧 run 的 meta 没有这些键
         model = build_model(args, device)
-        run_test(model, args, device, args.out)
+        meta = run_test(model, args, device, args.out)
+        if args.eval_signer:
+            run_signer_eval(model, args, device, args.out, meta, args.eval_signer)
         return
 
     os.makedirs(args.out, exist_ok=True)
     if args.train_split == args.eval_split:
         print("!! 训练集与评测集相同，冒烟用，数字不是结果", flush=True)
+    if args.encoder_lr is None:
+        args.encoder_lr = args.lr
 
     model = build_model(args, device)
     n_tr = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_all = sum(p.numel() for p in model.parameters())
-    print("阶段 2 | 可训练 {:.2f}M / 总计 {:.1f}M | LoRA r={} | mT5 权重: {} | 权重加载 {}".format(
-        n_tr / 1e6, n_all / 1e6, args.lora_r, "HF 原版" if args.hf_mt5 else "Uni-Sign",
-        model.load_info), flush=True)
+    print("阶段 {} | 可训练 {:.2f}M / 总计 {:.1f}M | LoRA r={} | 编码器 {} | mT5 权重: {} | 权重加载 {}".format(
+        3 if args.unfreeze_encoder else 2, n_tr / 1e6, n_all / 1e6, args.lora_r,
+        "可训 lr={:g}".format(args.encoder_lr) if args.unfreeze_encoder else "冻结",
+        "HF 原版" if args.hf_mt5 else "Uni-Sign", model.load_info), flush=True)
 
+    excl = [args.exclude_signer] if args.exclude_signer else None
     vocab = CharVocab.build(["x"])
     ds_tr = RTMPoseSLTDataset(ROOT, CSVD, args.train_split, vocab, frame_stride=1,
-                              max_frames=args.max_frames)
+                              max_frames=args.max_frames, exclude_translators=excl)
     ds_ev = RTMPoseSLTDataset(ROOT, CSVD, args.eval_split, vocab, frame_stride=1,
-                              max_frames=args.max_frames)
+                              max_frames=args.max_frames, exclude_translators=excl)
     dl_tr = DataLoader(ds_tr, batch_size=args.batch_size, shuffle=True,
                        num_workers=args.num_workers, collate_fn=collate_fn, pin_memory=True)
     dl_ev = DataLoader(ds_ev, batch_size=args.batch_size * 2, shuffle=False,
                        num_workers=args.num_workers, collate_fn=collate_fn)
-    print("train {} 条 | eval {} 条 | frame_stride=1 max_frames={}".format(
-        len(ds_tr), len(ds_ev), args.max_frames), flush=True)
+    print("train {} 条 | eval {} 条 | frame_stride=1 max_frames={}{}".format(
+        len(ds_tr), len(ds_ev), args.max_frames,
+        " | 已去掉手语者 {}".format(args.exclude_signer) if excl else ""), flush=True)
 
-    opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=args.lr)
+    enc_params = [p for p in model.encoder.parameters() if p.requires_grad]
+    other = [p for name, p in model.named_parameters()
+             if p.requires_grad and not name.startswith("encoder.")]
+    groups = [{"params": other, "lr": args.lr}]
+    if enc_params:
+        groups.append({"params": enc_params, "lr": args.encoder_lr})
+    opt = torch.optim.AdamW(groups)
     best, hist = -1.0, []
     t_start = time.time()
     for ep in range(1, args.epochs + 1):
-        set_train_mode(model, True)
+        set_train_mode(model, True, args.unfreeze_encoder)
         tot, nb, t0 = 0.0, 0, time.time()
         for b in dl_tr:
             f = b["feats"].to(device, non_blocking=True)
@@ -207,7 +295,8 @@ def main():
         res = evaluate(h, r, t)
         hist.append({"epoch": ep, "loss": tot / max(nb, 1), "bleu4": res["bleu4"],
                      "chrf": res["chrf"], "rouge-l": res["rouge-l"],
-                     "lr": opt.param_groups[0]["lr"]})
+                     "lr": opt.param_groups[0]["lr"],
+                     "enc_lr": opt.param_groups[1]["lr"] if len(groups) > 1 else None})
         flag = ""
         if res["bleu4"] > best:
             best = res["bleu4"]
