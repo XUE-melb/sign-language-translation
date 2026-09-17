@@ -3,7 +3,7 @@
 启动（本地）：
     set PYTHONPATH=src
     .venv-infer\\Scripts\\python -m uvicorn server.app:app --host 127.0.0.1 --port 8000
-环境变量：SLT_RUN（训练产物目录，默认 runs/E002_lora16_s1234；空字符串 = 零样本底座）
+环境变量：SLT_RUN（训练产物目录，默认 runs/E003_enc1e-4_s3456；空字符串 = 零样本底座）
 
 接口（三种输入模式，D-027 §四）：
     GET  /                      页面
@@ -32,7 +32,7 @@ from slt.infer import Translator
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(HERE, "static")
-RUN = os.environ.get("SLT_RUN", "runs/E002_lora16_s1234")
+RUN = os.environ.get("SLT_RUN", "runs/E003_enc1e-4_s3456")   # 阶段 3，按 dev 选的 seed（D-026 结论）
 
 
 @asynccontextmanager
