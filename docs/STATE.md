@@ -62,7 +62,16 @@ RTX 5060 8 GB、Core Ultra 7 265K、47 GB 内存、Python 3.13。需要单独的
 
 ## 三、正在跑什么
 
-**没有在跑的任务，GPU 空闲**（09-17 09:04 起）。下面是链路的记录。
+**`tmux work:extra` 跑 `scripts/run_extra_chain.sh`**（09-17 13:31 起，D-028，日志 `logs/extra_chain.log`）：
+E-005 去 LoRA → E-004b 留 E + 增广 → E-004c 留 E 阶段 3 配置 → E-004 留 A → 留 D → 汇总，约 23:30 打 `EXTRA CHAIN DONE`。
+`tmux work:analyze` 跑 `scripts/analyze_confidence.py --run runs/E003_enc1e-4_s3456`（日志 `logs/analyze_confidence_E003.log`，
+产物 `runs/E003_enc1e-4_s3456/analysis_confidence.{json,md}`），约 10 分钟。
+查进度：`ssh autodl 'grep "^\[" /root/autodl-tmp/slt/logs/extra_chain.log | tail -3'`
+
+**跑完后要做**：E-005 / E-004b / E-004c / 留 A / 留 D 入 EXPERIMENTS（补充实验节，不进主表）；D-028 补结论；
+校准与前缀曲线写进 D-027 的 agent 设计依据；若增广有效，决定是否作为 demo 模型的配置（需补 seed）。
+
+下面是阶段 3 链路的记录。
 
 **`tmux work:s3chain` 跑 `scripts/run_stage3_chain.sh`**（09-16 22:12 启动，日志 `logs/stage3_chain.log`）：
 
@@ -148,7 +157,7 @@ E-002 60 轮按 D-025 规则成为正式行（差 0.38 恰过阈值 0.378，1/3 
 ## 七、未解决的问题
 
 ### 阻塞
-- 无。模型线四行齐；软件线等本人的 Anthropic API key 接 agent。
+- 无。模型线四行齐，补充链在跑（D-028）；软件线等本人的 API key 接 agent（Claude 与 DeepSeek 双后端，D-027 补充）。
 
 ### 记录在案、暂不修
 - 原版 mT5（路线 (b)）已砍；只训 pose_proj 无 LoRA、label_smoothing 0.2 的对照未做

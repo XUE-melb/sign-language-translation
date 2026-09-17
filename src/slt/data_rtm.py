@@ -124,12 +124,51 @@ def load_pose_pkl(path, thr=CONF_THR):
     return build_groups(d["keypoints"], d["scores"], thr)
 
 
+ASPECT = 16.0 / 9.0     # CE-CSL 视频 16:9；旋转前把 x 乘回真实长宽比，否则在归一化坐标里旋转会变成剪切
+
+
+def augment_keypoints(K, S, rot_deg=8.0, speed=(0.85, 1.15), noise=0.003, hand_scale=(0.9, 1.1)):
+    """训练时的随机变换，作用在 RTMPose 原始输出 (T,133,2) 归一化坐标上，在 crop_scale 之前。
+
+    为什么是这四种（D-026 结论，针对"换个人打法不一样"）：
+      - 变速 0.85–1.15：不同人打同一句的快慢不同。按新长度 linspace 重采样。
+      - 整体旋转 ±8°：镜头与身体的相对倾斜。绕画面中心，按真实长宽比旋转。
+      - 手相对身体缩放 0.9–1.1：身材比例不同。绕各自手腕（91 / 112）缩放，身体不动；
+        crop_scale 只用身体框定尺度，所以这一项不会被归一化抵消。
+      - 坐标噪声 σ=0.003：检测器抖动。
+    不做水平翻转：手语左右手有语义。整体平移/缩放不做：会被 crop_scale 抵消，等于没做。
+    随机数用 torch 生成：DataLoader 多进程下 numpy 的 RNG 状态会被各 worker 复制，torch 的不会。
+    """
+    K = np.asarray(K, np.float32).copy(); S = np.asarray(S, np.float32)
+    T = len(K)
+    r = torch.rand(6).tolist()
+    # 1) 变速
+    f = speed[0] + (speed[1] - speed[0]) * r[0]
+    n = max(8, int(round(T / f)))
+    idx = np.clip(np.round(np.linspace(0, T - 1, n)).astype(int), 0, T - 1)
+    K, S = K[idx], S[idx].copy()
+    # 2) 旋转（长宽比校正后绕画面中心）
+    th = np.deg2rad((2 * r[1] - 1) * rot_deg)
+    c, s_ = np.cos(th), np.sin(th)
+    P = (K - 0.5) * np.array([ASPECT, 1.0], np.float32)
+    P = P @ np.array([[c, s_], [-s_, c]], np.float32)
+    K = P / np.array([ASPECT, 1.0], np.float32) + 0.5
+    # 3) 手相对缩放
+    for base, rr in ((91, r[2]), (112, r[3])):
+        g = hand_scale[0] + (hand_scale[1] - hand_scale[0]) * rr
+        w = K[:, base:base + 1, :]
+        K[:, base:base + 21, :] = (K[:, base:base + 21, :] - w) * g + w
+    # 4) 噪声
+    K = K + torch.randn(K.shape).numpy().astype(np.float32) * noise
+    return K, S
+
+
 class RTMPoseSLTDataset(Dataset):
     """与 PoseSLTDataset 接口一致，便于 train.py 直接切换。"""
 
     def __init__(self, root, csv_dir, split, vocab, frame_stride=2,
                  max_frames=256, conf_thr=CONF_THR, only_translators=None,
-                 exclude_translators=None, **_ignored):
+                 exclude_translators=None, augment=False, **_ignored):
         # only_translators / exclude_translators：按 Translator 列筛选，留一手语者实验（D-026）用。
         # 缺 pkl 的统计只针对筛选后保留的条目。
         self.pose_root = os.path.join(root, "pose_rtm")
@@ -138,6 +177,7 @@ class RTMPoseSLTDataset(Dataset):
         self.frame_stride = frame_stride
         self.max_frames = max_frames
         self.conf_thr = conf_thr
+        self.augment = augment                        # 训练增广开关（E-004b）
         self.dim = N_KP * 3                            # 207，给阶段 0 展平用
         self.n_kp = N_KP
         self.spans = None                              # 首次 __getitem__ 后填上
@@ -169,6 +209,8 @@ class RTMPoseSLTDataset(Dataset):
         with open(it["path"], "rb") as f:
             d = pickle.load(f)
         K, S = d["keypoints"], d["scores"]
+        if self.augment:
+            K, S = augment_keypoints(K, S)
 
         # 先抽帧再归一化：crop_scale 的 bbox 应当反映真正喂进模型的那些帧
         if self.frame_stride > 1:

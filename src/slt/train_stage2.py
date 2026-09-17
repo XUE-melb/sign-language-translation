@@ -120,6 +120,7 @@ def _meta(args, meta, split, name):
             "seed": args.seed, "stage": 3 if unfreeze else 2,
             "lora_r": args.lora_r, "unfreeze_encoder": unfreeze,
             "encoder_lr": getattr(args, "encoder_lr", None), "exclude_signer": excl,
+            "augment": bool(getattr(args, "augment", False)),
             "unisign_ckpt": os.path.basename(args.unisign_ckpt), "hf_mt5": args.hf_mt5,
             "protocol": ("留一手语者 {}（train/dev 均去掉）".format(excl) if excl
                          else "signer-dependent，CE-CSL 官方划分"),
@@ -214,6 +215,8 @@ def main():
                     help="编码器学习率，默认等于 --lr；只在 --unfreeze-encoder 时有意义")
     ap.add_argument("--exclude-signer", default="",
                     help="E-004：train 与 dev 都去掉这位手语者（如 E）")
+    ap.add_argument("--augment", action="store_true",
+                    help="训练集关键点增广（变速/旋转/手部缩放/噪声，E-004b，D-026 补救方向）")
     ap.add_argument("--eval-signer", default="",
                     help="与 --test-only 连用：在该手语者的 train+dev+test 全部片段上评")
     ap.add_argument("--test-only", default="", help="给 run 目录，只在 test 上评 best")
@@ -231,7 +234,7 @@ def main():
         saved = json.load(open(os.path.join(args.out, "best", "meta.json"), encoding="utf-8"))["args"]
         for k in ("lora_r", "lora_alpha", "lora_dropout", "unisign_ckpt", "hf_mt5", "max_frames", "seed"):
             setattr(args, k, saved[k])
-        for k, dflt in (("unfreeze_encoder", False), ("encoder_lr", None), ("exclude_signer", "")):
+        for k, dflt in (("unfreeze_encoder", False), ("encoder_lr", None), ("exclude_signer", ""), ("augment", False)):
             setattr(args, k, saved.get(k, dflt))      # 旧 run 的 meta 没有这些键
         model = build_model(args, device)
         meta = run_test(model, args, device, args.out)
@@ -256,7 +259,8 @@ def main():
     excl = [args.exclude_signer] if args.exclude_signer else None
     vocab = CharVocab.build(["x"])
     ds_tr = RTMPoseSLTDataset(ROOT, CSVD, args.train_split, vocab, frame_stride=1,
-                              max_frames=args.max_frames, exclude_translators=excl)
+                              max_frames=args.max_frames, exclude_translators=excl,
+                              augment=args.augment)
     ds_ev = RTMPoseSLTDataset(ROOT, CSVD, args.eval_split, vocab, frame_stride=1,
                               max_frames=args.max_frames, exclude_translators=excl)
     dl_tr = DataLoader(ds_tr, batch_size=args.batch_size, shuffle=True,
@@ -265,7 +269,8 @@ def main():
                        num_workers=args.num_workers, collate_fn=collate_fn)
     print("train {} 条 | eval {} 条 | frame_stride=1 max_frames={}{}".format(
         len(ds_tr), len(ds_ev), args.max_frames,
-        " | 已去掉手语者 {}".format(args.exclude_signer) if excl else ""), flush=True)
+        " | 已去掉手语者 {}".format(args.exclude_signer) if excl else "")
+        + (" | 训练增广开" if args.augment else ""), flush=True)
 
     enc_params = [p for p in model.encoder.parameters() if p.requires_grad]
     other = [p for name, p in model.named_parameters()
