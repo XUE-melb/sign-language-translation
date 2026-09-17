@@ -28,3 +28,8 @@ weights/
 *.pth
 *.safetensors
 *.onnx
+
+# 密钥（API key 只放环境变量或 .env，绝不入库）
+.env
+.env.*
+*.key

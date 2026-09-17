@@ -324,8 +324,9 @@ footer { padding: var(--space-4) var(--space-6) var(--space-8); font-size: 13px;
     <div class="ref" id="ref" hidden></div>
 
     <div class="section">
-      <div class="panel-head"><h2>Agent 面板</h2><span class="chip chip-warn">规则版 · LLM 重排待接入</span></div>
+      <div class="panel-head"><h2>Agent 面板</h2><span class="chip chip-warn" id="agent-chip">裁判：未连接</span></div>
       <div class="agent-box">
+        <div class="decision" id="judge-decision" hidden></div>
         <div class="slider">
           <label for="tau">确认阈值 τ（平均 token 概率低于 τ 就追问）：<b class="mono" id="tau-val">0.70</b></label>
           <input type="range" id="tau" min="0.2" max="0.9" step="0.05" value="0.7" aria-describedby="tau-help">
@@ -481,7 +482,7 @@ function setLive(text, placeholder = false) {
   step();
 }
 function cursorEl() { const s = document.createElement("span"); s.className = "cursor"; s.setAttribute("aria-hidden", "true"); return s; }
-function resetOutput() { setLive("等待输入", true); liveMeta.textContent = ""; nbestEl.innerHTML = ""; refEl.hidden = true; $("timing").textContent = ""; lastFinal = null; renderDecision(); }
+function resetOutput() { setLive("等待输入", true); liveMeta.textContent = ""; nbestEl.innerHTML = ""; refEl.hidden = true; $("timing").textContent = ""; lastFinal = null; judgeDecision = null; judgeSeq++; judgeEl.hidden = true; renderDecision(); }
 function conf(score) { return Math.exp(score); }
 function renderNbest(nbest) {
   nbestEl.innerHTML = "";
@@ -501,6 +502,44 @@ function showFinal(res, refText) {
   renderNbest(res.nbest);
   if (refText) { refEl.hidden = false; refEl.textContent = "参考句：" + refText; refEl.classList.toggle("match", res.nbest.length && res.nbest[0].text === refText); }
   renderDecision();
+  requestJudge(res);
+}
+
+/* ---------- LLM 裁判（agent/judge.py，服务端 /api/agent/decide） ---------- */
+let judgeName = "rule", judgeDecision = null, judgeSeq = 0;
+const judgeEl = $("judge-decision");
+async function requestJudge(res) {
+  judgeDecision = null; const seq = ++judgeSeq;
+  if (!res.nbest || res.nbest.length < 2) { judgeEl.hidden = true; return; }
+  judgeEl.hidden = false; judgeEl.className = "decision";
+  judgeEl.innerHTML = '<span class="spinner" aria-hidden="true" style="width:16px;height:16px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;display:inline-block;animation:spin .8s linear infinite"></span><span>裁判（' + judgeName + '）在 4 条候选里选…</span>';
+  const context = [...logEl.querySelectorAll("li")].slice(-6).map(li => li.children[0].textContent + "：" + li.children[1].textContent);
+  try {
+    const r = await fetch("/api/agent/decide", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ nbest: res.nbest, context }) });
+    if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+    const d = await r.json();
+    if (seq !== judgeSeq) return;            // 已经换了一句
+    judgeDecision = d; renderJudge(d); renderDecision();   // 规则行降为对照
+    // 把裁判选中的候选在列表里标出来
+    nbestEl.querySelectorAll("li").forEach((li, i) => li.classList.toggle("top", i === d.choice - 1));
+  } catch (e) { if (seq === judgeSeq) { judgeEl.className = "decision ask"; judgeEl.textContent = "裁判不可用：" + e.message + "，下面按规则版处理。"; } }
+}
+function renderJudge(d) {
+  const fromRule = d.backend === "rule";
+  judgeEl.className = "decision " + (d.ask ? "ask" : "ok");
+  const icon = d.ask ? '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 9v4m0 4h.01"/><circle cx="12" cy="12" r="9"/></svg>'
+                     : '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l4 4L19 7"/></svg>';
+  judgeEl.innerHTML = icon + '<span><b>裁判' + (fromRule ? "（规则回退）" : "（" + d.backend + "，" + d.ms + " ms）") + '</b>：选第 ' + d.choice + ' 条「<span class="jtext"></span>」，' +
+    (d.ask ? "建议向手语者确认" : "直接输出") + (d.reason ? "。理由：<span class=\"jreason\"></span>" : "") + (d.error ? "（API 出错，已回退规则）" : "") + "</span>";
+  judgeEl.querySelector(".jtext").textContent = d.text; if (d.reason) judgeEl.querySelector(".jreason").textContent = d.reason;
+  // 按钮：裁判 ask 就列候选让手语者确认；否则一键记入
+  choicesEl.innerHTML = "";
+  if (d.ask && lastFinal) {
+    lastFinal.nbest.forEach((cand, i) => { const b = document.createElement("button"); b.className = "btn" + (i === d.choice - 1 ? " btn-primary" : ""); b.type = "button"; b.textContent = `${i + 1}. ${cand.text}`; b.onclick = () => addLog("手语者", cand.text + "（已确认）", "signer"); choicesEl.append(b); });
+    const r = document.createElement("button"); r.className = "btn btn-danger"; r.type = "button"; r.textContent = "都不是，请重打"; r.onclick = () => addLog("Agent", "请再打一遍这句话。"); choicesEl.append(r);
+  } else {
+    const b = document.createElement("button"); b.className = "btn btn-primary"; b.type = "button"; b.textContent = "记入对话：" + d.text; b.onclick = () => addLog("手语者", d.text, "signer"); choicesEl.append(b);
+  }
 }
 
 /* ---------- Agent 面板（规则版占位：置信度门控） ---------- */
@@ -508,19 +547,23 @@ const tau = $("tau"), tauVal = $("tau-val"), decisionEl = $("decision"), choices
 tau.addEventListener("input", () => { tauVal.textContent = (+tau.value).toFixed(2); renderDecision(); });
 function addLog(who, msg, cls) { const li = document.createElement("li"); li.className = cls || ""; li.innerHTML = `<span class="who"></span><span class="msg"></span>`; li.children[0].textContent = who; li.children[1].textContent = msg; logEl.append(li); logEl.scrollTop = logEl.scrollHeight; }
 function renderDecision() {
-  choicesEl.innerHTML = "";
+  // 规则版门控：LLM 裁判在线时只作对照行，按钮由 renderJudge 管
+  const ownButtons = !(typeof judgeDecision !== "undefined" && judgeDecision);
+  if (ownButtons) choicesEl.innerHTML = "";
   if (!lastFinal || !lastFinal.nbest.length) { decisionEl.className = "decision"; decisionEl.innerHTML = '<span class="status">还没有译文。</span>'; return; }
-  const top = lastFinal.nbest[0], c = conf(top.score), t = +tau.value;
+  const top = lastFinal.nbest[0], c = conf(top.score), t = +tau.value, tag = ownButtons ? "" : "规则版对照：";
   if (c >= t) {
     decisionEl.className = "decision ok";
-    decisionEl.innerHTML = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l4 4L19 7"/></svg><span>置信度 ${Math.round(c * 100)}% ≥ τ，直接输出：<b></b></span>`;
+    decisionEl.innerHTML = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l4 4L19 7"/></svg><span>${tag}置信度 ${Math.round(c * 100)}% ≥ τ，直接输出：<b></b></span>`;
     decisionEl.querySelector("b").textContent = top.text;
-    const b = document.createElement("button"); b.className = "btn"; b.type = "button"; b.textContent = "记入对话"; b.onclick = () => addLog("手语者", top.text, "signer"); choicesEl.append(b);
+    if (ownButtons) { const b = document.createElement("button"); b.className = "btn"; b.type = "button"; b.textContent = "记入对话"; b.onclick = () => addLog("手语者", top.text, "signer"); choicesEl.append(b); }
   } else {
     decisionEl.className = "decision ask";
-    decisionEl.innerHTML = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 9v4m0 4h.01"/><circle cx="12" cy="12" r="9"/></svg><span>置信度 ${Math.round(c * 100)}% &lt; τ，向手语者确认：是下面哪一句？</span>`;
-    lastFinal.nbest.forEach((cand, i) => { const b = document.createElement("button"); b.className = "btn"; b.type = "button"; b.textContent = `${i + 1}. ${cand.text}`; b.onclick = () => { addLog("手语者", cand.text + "（已确认）", "signer"); }; choicesEl.append(b); });
-    const r = document.createElement("button"); r.className = "btn btn-danger"; r.type = "button"; r.textContent = "都不是，请重打"; r.onclick = () => addLog("Agent", "请再打一遍这句话。"); choicesEl.append(r);
+    decisionEl.innerHTML = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 9v4m0 4h.01"/><circle cx="12" cy="12" r="9"/></svg><span>${tag}置信度 ${Math.round(c * 100)}% &lt; τ，向手语者确认：是下面哪一句？</span>`;
+    if (ownButtons) {
+      lastFinal.nbest.forEach((cand, i) => { const b = document.createElement("button"); b.className = "btn"; b.type = "button"; b.textContent = `${i + 1}. ${cand.text}`; b.onclick = () => { addLog("手语者", cand.text + "（已确认）", "signer"); }; choicesEl.append(b); });
+      const r = document.createElement("button"); r.className = "btn btn-danger"; r.type = "button"; r.textContent = "都不是，请重打"; r.onclick = () => addLog("Agent", "请再打一遍这句话。"); choicesEl.append(r);
+    }
   }
 }
 $("hearing-form").addEventListener("submit", (e) => { e.preventDefault(); const v = $("hearing-input").value.trim(); if (!v) return; addLog("听人", v); $("hearing-input").value = ""; });
@@ -535,6 +578,11 @@ async function loadInfo() {
     $("foot-model").textContent = `模型：Uni-Sign 编码器 + pose_proj + mT5-base（LoRA 已合并）· ${info.info.run} · 加载 ${info.load_seconds}s · ${info.device}`;
     setConn(true, "服务在线");
   } catch (e) { setConn(false, "服务离线"); $("model-chip").textContent = "未连接"; }
+  try {
+    const ai = await api("/api/agent/info"); judgeName = ai.judge;
+    const chip = $("agent-chip"); chip.className = "chip " + (ai.judge === "rule" ? "chip-warn" : "chip-ok");
+    chip.textContent = ai.judge === "rule" ? "裁判：规则版（无 API key）" : "裁判：" + ai.judge + "（LLM 只在候选里选）";
+  } catch (e) { $("agent-chip").textContent = "裁判：未连接"; }
 }
 
 /* ---------- 回放模式 ---------- */

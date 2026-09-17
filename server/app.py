@@ -191,6 +191,39 @@ async def translate_video(file: UploadFile = File(...), n_best: int = Form(4), b
             "keypoints": K.round(4).tolist(), "scores": S.round(3).tolist()}
 
 
+# ------------------------------------------------------------------ D 层 agent：裁判
+
+@app.get("/api/agent/info")
+async def agent_info():
+    return {"judge": _judge().name, "available": ["anthropic" if os.environ.get("ANTHROPIC_API_KEY") else None,
+                                                  "deepseek" if os.environ.get("DEEPSEEK_API_KEY") else None, "rule"]}
+
+
+def _judge():
+    if getattr(app.state, "judge", None) is None:
+        import sys
+        if REPO not in sys.path:                    # agent/ 在仓库根目录，服务用 PYTHONPATH=src 启动
+            sys.path.insert(0, REPO)
+        from agent.judge import make_judge
+        app.state.judge = make_judge()
+        print("agent 裁判：{}".format(app.state.judge.name), flush=True)
+    return app.state.judge
+
+
+@app.post("/api/agent/decide")
+async def agent_decide(body: dict):
+    """输入 {nbest:[{text,score}], context:[str]}；输出裁判决定。LLM 只在候选里选（agent/judge.py）。"""
+    nb = body.get("nbest") or []
+    if not nb:
+        raise HTTPException(400, "nbest 为空")
+    cands = [(c["text"], float(c["score"])) for c in nb][:4]
+    ctx = [str(x) for x in (body.get("context") or [])][-6:]
+    loop = asyncio.get_running_loop()
+    d = await loop.run_in_executor(None, lambda: _judge().decide(cands, ctx))
+    out = d.to_dict(); out["text"] = cands[d.choice - 1][0]
+    return out
+
+
 # ------------------------------------------------------------------ 关键点流
 
 @app.websocket("/ws/stream")
