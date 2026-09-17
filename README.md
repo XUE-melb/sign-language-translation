@@ -69,7 +69,7 @@ set PYTHONPATH=src
 |----|------|------|
 | B 服务端 | `server/app.py`（FastAPI） | 常驻进程持有模型；`/api/translate`、`/api/translate_video`、WebSocket `/ws/stream` |
 | C 端侧 | 页面内置回放 + 浏览器录制 | 关键点逐帧经 WebSocket 推送，**传坐标不传画面**；上传/录制模式由服务端 rtmlib 提关键点 |
-| D agent | 页面 Agent 面板 | 置信度门控（规则版）：平均 token 概率低于阈值就向手语者确认；LLM 重排待接入 |
+| D agent | `agent/judge.py` + 页面 Agent 面板 | LLM 裁判只在 n-best 里选并判定是否追问（Claude / DeepSeek 双后端，规则版兜底）。test 集评测：重排 +2.05 BLEU-4（上限 +7.47），门控直接输出部分 32.2 vs 追问部分 16.0（D-027） |
 
 页面三种输入：测试集骨架回放（私下展示用，只播关键点不播视频）、上传视频、摄像头录制。
 推理封装 `src/slt/infer.py` 把 LoRA 合并进 mT5 主干，接口 `translate((T,207)) -> [(text, logprob)]`，

@@ -41,6 +41,7 @@ def main():
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--tau", type=float, default=0.7, help="规则版门控阈值，作对照")
+    ap.add_argument("--retry-errors", action="store_true", help="只重跑缓存里 API 出错回退规则的句子（如余额不足后充值）")
     a = ap.parse_args()
 
     data = json.load(open(a.analysis, encoding="utf-8"))
@@ -52,6 +53,14 @@ def main():
     if os.path.exists(cache_p):
         for line in open(cache_p, encoding="utf-8"):
             d = json.loads(line); done[d["number"]] = d
+        if a.retry_errors:
+            bad = [k for k, v in done.items() if v["decision"].get("error")]
+            for k in bad:
+                del done[k]
+            with open(cache_p, "w", encoding="utf-8") as f:       # 重写缓存，去掉出错项
+                for v in done.values():
+                    f.write(json.dumps(v, ensure_ascii=False) + "\n")
+            print("重跑出错回退的 {} 句".format(len(bad)), flush=True)
     todo = [r for r in rows if r["number"] not in done]
     print("裁判 {} | 共 {} 句，已缓存 {}，待跑 {}".format(judge.name, len(rows), len(rows) - len(todo), len(todo)), flush=True)
 

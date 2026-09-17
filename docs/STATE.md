@@ -117,8 +117,11 @@ E-002 60 轮按 D-025 规则成为正式行（差 0.38 恰过阈值 0.378，1/3 
   （走上传同一路径，含示范骨架"跟打"）；n-best + 置信度条；Agent 面板规则版（置信度门控 τ、确认/重打、对话记录）。
   `/api/clips`、`/api/clip/{number}` 读本地 pkl。无头 Chromium 实测：回放→推流→最终译文与参考句一致，
   375px 无横向滚动，触控目标全部 ≥44px，无控制台报错（`scratchpad/page_test.py`）
-- **未做**：agent 的 LLM 重排 + 两行评测（Anthropic SDK；写前先读 claude-api skill）、独立端侧 Python 客户端
-  （摄像头 → WebSocket 实时，现由页面录制上传代替）、onnxruntime-gpu（实时才需要）、录像、README 截图（用自录片段）
+- **agent 已接通（09-17 16:00）**：`agent/judge.py` 三后端（anthropic / deepseek / rule，`SLT_JUDGE` 切换，key 只在环境变量），
+  `agent/eval_rerank.py` 两行评测：重排 +2.05（上限 +7.47），门控裁判追问 56% 直接输出部分 32.2；页面 Agent 面板显示裁判决定。
+  **待办**：用户充值后 `--retry-errors` 补 70 句；DeepSeek key 到手后跑一遍对照
+- **未做**：独立端侧 Python 客户端（摄像头 → WebSocket 实时，现由页面录制上传代替）、onnxruntime-gpu（实时才需要）、
+  录像、README 截图（用自录片段）
 
 本人并行做：跟数据集视频学三五句手语（句子待 E-002 预测里挑）；读模型讲解；过 DECISIONS 的追问清单。
 
@@ -157,7 +160,7 @@ E-002 60 轮按 D-025 规则成为正式行（差 0.38 恰过阈值 0.378，1/3 
 ## 七、未解决的问题
 
 ### 阻塞
-- 无。模型线四行齐，补充链在跑（D-028）；软件线等本人的 API key 接 agent（Claude 与 DeepSeek 双后端，D-027 补充）。
+- 无。模型线补充链在跑（D-028）；agent 评测的 70 句回退等本人充值后补齐（约 $0.5）。
 
 ### 记录在案、暂不修
 - 原版 mT5（路线 (b)）已砍；只训 pose_proj 无 LoRA、label_smoothing 0.2 的对照未做
