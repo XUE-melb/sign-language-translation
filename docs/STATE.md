@@ -62,7 +62,13 @@ RTX 5060 8 GB、Core Ultra 7 265K、47 GB 内存、Python 3.13。需要单独的
 
 ## 三、正在跑什么
 
-**没有在跑的任务，GPU 空闲**（09-17 22:21 起）。补充链已完成并入表（EXPERIMENTS "补充实验"，D-028 §七）。
+**`tmux work:h2s` 跑 `scripts/run_how2sign_prep.sh`**（09-18 00:26 起，D-029，日志 `logs/how2sign_prep.log`）：
+从 HF 镜像下载 How2Sign 正面片段（约 35 GB，5.5 MB/s，约 2 小时）→ 解压到 `/root/autodl-tmp/How2Sign/video/{train,dev,test}/H2S`
+→ 生成 CE-CSL 同列名 CSV → RTMPose 提取（dev、test、train，估 12–20 小时）→ `HOW2SIGN PREP DONE`。
+查进度：`ssh autodl 'tail -5 /root/autodl-tmp/slt/logs/how2sign_prep.log'`
+**提取期间要做的代码**：`--lang en`（prefix、标签长度、不去空格、tokenizer/模型类）、metrics 语言开关；见 D-029 §三。
+
+补充链已完成并入表（EXPERIMENTS "补充实验"，D-028 §七）。
 
 历史记录：`tmux work:extra` 跑过 `scripts/run_extra_chain.sh`（09-17 13:31–22:21，D-028，日志 `logs/extra_chain.log`）：
 E-005 去 LoRA → E-004b 留 E + 增广 → E-004c 留 E 阶段 3 配置 → E-004 留 A → 留 D → 汇总，约 23:30 打 `EXTRA CHAIN DONE`。
@@ -161,7 +167,7 @@ E-002 60 轮按 D-025 规则成为正式行（差 0.38 恰过阈值 0.378，1/3 
 ## 七、未解决的问题
 
 ### 阻塞
-- 无。模型线全部完成；剩录像、README 截图、DeepSeek 对照（可选）、09-27 前撤出实例。
+- 第一章无阻塞。第二章（How2Sign）：数据链在跑；训练代码的 `--lang en` 改动待做（D-029 §三）。
 
 ### 记录在案、暂不修
 - 原版 mT5（路线 (b)）已砍；只训 pose_proj 无 LoRA、label_smoothing 0.2 的对照未做
