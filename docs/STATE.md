@@ -62,14 +62,15 @@ RTX 5060 8 GB、Core Ultra 7 265K、47 GB 内存、Python 3.13。需要单独的
 
 ## 三、正在跑什么
 
-**`tmux work:extra` 跑 `scripts/run_extra_chain.sh`**（09-17 13:31 起，D-028，日志 `logs/extra_chain.log`）：
+**没有在跑的任务，GPU 空闲**（09-17 22:21 起）。补充链已完成并入表（EXPERIMENTS "补充实验"，D-028 §七）。
+
+历史记录：`tmux work:extra` 跑过 `scripts/run_extra_chain.sh`（09-17 13:31–22:21，D-028，日志 `logs/extra_chain.log`）：
 E-005 去 LoRA → E-004b 留 E + 增广 → E-004c 留 E 阶段 3 配置 → E-004 留 A → 留 D → 汇总，约 23:30 打 `EXTRA CHAIN DONE`。
 `tmux work:analyze` 跑 `scripts/analyze_confidence.py --run runs/E003_enc1e-4_s3456`（日志 `logs/analyze_confidence_E003.log`，
 产物 `runs/E003_enc1e-4_s3456/analysis_confidence.{json,md}`），约 10 分钟。
 查进度：`ssh autodl 'grep "^\[" /root/autodl-tmp/slt/logs/extra_chain.log | tail -3'`
 
-**跑完后要做**：E-005 / E-004b / E-004c / 留 A / 留 D 入 EXPERIMENTS（补充实验节，不进主表）；D-028 补结论；
-校准与前缀曲线写进 D-027 的 agent 设计依据；若增广有效，决定是否作为 demo 模型的配置（需补 seed）。
+结论：LoRA 值 +3.4；增广无效；解冻编码器更泛化到陌生人（E 43% → 73%）；三人同子集保留 43 / 78 / 83%。demo 继续用 E-003。
 
 下面是阶段 3 链路的记录。
 
@@ -160,7 +161,7 @@ E-002 60 轮按 D-025 规则成为正式行（差 0.38 恰过阈值 0.378，1/3 
 ## 七、未解决的问题
 
 ### 阻塞
-- 无。模型线补充链在跑（D-028）。
+- 无。模型线全部完成；剩录像、README 截图、DeepSeek 对照（可选）、09-27 前撤出实例。
 
 ### 记录在案、暂不修
 - 原版 mT5（路线 (b)）已砍；只训 pose_proj 无 LoRA、label_smoothing 0.2 的对照未做
