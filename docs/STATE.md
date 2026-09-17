@@ -118,8 +118,8 @@ E-002 60 轮按 D-025 规则成为正式行（差 0.38 恰过阈值 0.378，1/3 
   `/api/clips`、`/api/clip/{number}` 读本地 pkl。无头 Chromium 实测：回放→推流→最终译文与参考句一致，
   375px 无横向滚动，触控目标全部 ≥44px，无控制台报错（`scratchpad/page_test.py`）
 - **agent 已接通（09-17 16:00）**：`agent/judge.py` 三后端（anthropic / deepseek / rule，`SLT_JUDGE` 切换，key 只在环境变量），
-  `agent/eval_rerank.py` 两行评测：重排 +2.05（上限 +7.47），门控裁判追问 56% 直接输出部分 32.2；页面 Agent 面板显示裁判决定。
-  **待办**：用户充值后 `--retry-errors` 补 70 句；DeepSeek key 到手后跑一遍对照
+  `agent/eval_rerank.py` 两行评测（完整 500 句）：重排 +2.07（上限 +7.22），门控裁判追问 56% 直接输出部分 30.5；页面 Agent 面板显示裁判决定。
+  **待办**：DeepSeek key 到手后跑一遍对照
 - **未做**：独立端侧 Python 客户端（摄像头 → WebSocket 实时，现由页面录制上传代替）、onnxruntime-gpu（实时才需要）、
   录像、README 截图（用自录片段）
 
@@ -160,7 +160,7 @@ E-002 60 轮按 D-025 规则成为正式行（差 0.38 恰过阈值 0.378，1/3 
 ## 七、未解决的问题
 
 ### 阻塞
-- 无。模型线补充链在跑（D-028）；agent 评测的 70 句回退等本人充值后补齐（约 $0.5）。
+- 无。模型线补充链在跑（D-028）。
 
 ### 记录在案、暂不修
 - 原版 mT5（路线 (b)）已砍；只训 pose_proj 无 LoRA、label_smoothing 0.2 的对照未做
