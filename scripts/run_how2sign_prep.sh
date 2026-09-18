@@ -13,6 +13,7 @@ PY=/root/miniconda3/bin/python
 log() { echo "[$(date +%F_%T)] $*" | tee -a "$LOG"; }
 mkdir -p "$ROOT/mirror" "$ROOT/video" "$ROOT/csv" "$ROOT/pose_rtm"
 source /etc/network_turbo >/dev/null 2>&1
+export HF_HUB_DISABLE_XET=1     # Xet CAS 后端在本机 401（09-18 实测），走普通 HTTP 下载
 
 # ---------- 1) 下载（可断点续传，hf_hub 自带校验） ----------
 log "下载开始"
@@ -48,7 +49,7 @@ for pair in "train:train" "val:dev" "test:test"; do
     n0=$(ls "$ROOT/video/$dst/H2S" 2>/dev/null | wc -l)
     log "解压 $src -> video/$dst/H2S（已有 $n0 个）"
     for z in "$ROOT/mirror/${src}_rgb_front_clips"/*.zip; do
-        unzip -q -o -j "$z" -d "$ROOT/video/$dst/H2S" || log "!! 解压失败 $z"
+        unzip -q -n -j "$z" -d "$ROOT/video/$dst/H2S" || log "!! 解压失败 $z"      # -n：已有的不重复解压，脚本可重跑
     done
     log "  video/$dst/H2S 现有 $(ls "$ROOT/video/$dst/H2S" | wc -l) 个 mp4"
 done
