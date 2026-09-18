@@ -62,11 +62,14 @@ RTX 5060 8 GB、Core Ultra 7 265K、47 GB 内存、Python 3.13。需要单独的
 
 ## 三、正在跑什么
 
-**`tmux work:h2s` 跑 `scripts/run_how2sign_prep.sh`**（09-18 00:26 起，D-029，日志 `logs/how2sign_prep.log`）：
+**`tmux work:h2s` 跑 `scripts/run_how2sign_prep.sh`**（09-18 13:52 第二次起跑补齐缺片，D-029 §六；第一次因 HF Xet 401 只下到 12/32 train 分片，
+已设 `HF_HUB_DISABLE_XET=1`）；**`tmux work:h2strain` 等它完成后自动跑 E-101 / E-102**（`scripts/run_how2sign_train.sh`，
+日志 `logs/how2sign_train.log`，约 09-19 晚 `HOW2SIGN TRAIN DONE`）。原链路说明：
 从 HF 镜像下载 How2Sign 正面片段（约 35 GB，5.5 MB/s，约 2 小时）→ 解压到 `/root/autodl-tmp/How2Sign/video/{train,dev,test}/H2S`
 → 生成 CE-CSL 同列名 CSV → RTMPose 提取（dev、test、train，估 12–20 小时）→ `HOW2SIGN PREP DONE`。
 查进度：`ssh autodl 'tail -5 /root/autodl-tmp/slt/logs/how2sign_prep.log'`
-**提取期间要做的代码**：`--lang en`（prefix、标签长度、不去空格、tokenizer/模型类）、metrics 语言开关；见 D-029 §三。
+**`--lang en` 已做完并冒烟通过**（D-029 §六）。原版 mT5 权重已转 safetensors（`weights/mt5-base/model.safetensors`）。
+查训练：`ssh autodl 'tail -3 /root/autodl-tmp/slt/logs/how2sign_train.log'`
 
 补充链已完成并入表（EXPERIMENTS "补充实验"，D-028 §七）。
 
@@ -167,7 +170,7 @@ E-002 60 轮按 D-025 规则成为正式行（差 0.38 恰过阈值 0.378，1/3 
 ## 七、未解决的问题
 
 ### 阻塞
-- 第一章无阻塞。第二章（How2Sign）：数据链在跑；训练代码的 `--lang en` 改动待做（D-029 §三）。
+- 第一章无阻塞。第二章：数据补齐 + 提取在跑，训练链排队；无需人工。
 
 ### 记录在案、暂不修
 - 原版 mT5（路线 (b)）已砍；只训 pose_proj 无 LoRA、label_smoothing 0.2 的对照未做

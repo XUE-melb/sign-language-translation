@@ -20,23 +20,37 @@ import sacrebleu
 from sacrebleu.metrics import BLEU
 from rouge_chinese import Rouge
 
+LANG = "zh"      # zh：按字（sacrebleu tokenize=zh，ROUGE 喂单字）；en：按词（13a，ROUGE 喂空格分词）。D-029
+
+
+def set_lang(lang):
+    global LANG
+    assert lang in ("zh", "en"), lang
+    LANG = lang
+
+
+def _bleu_tok():
+    return "zh" if LANG == "zh" else "13a"
+
 
 def _char_tokens(s):
-    """按字切分并用空格连接，给 rouge-chinese 用。"""
-    return " ".join(list(s.strip())) or "空"
+    """给 rouge-chinese 用的空格分隔 token 串：zh 按字，en 按词（小写）。"""
+    if LANG == "zh":
+        return " ".join(list(s.strip())) or "空"
+    return " ".join(s.lower().split()) or "empty"
 
 
 def corpus_bleu_n(hyps, refs, n):
     """BLEU-n（max_ngram_order=n），sacrebleu 中文分词器，0-100。"""
     if not hyps:
         return float("nan")
-    return BLEU(tokenize="zh", max_ngram_order=n).corpus_score(hyps, [refs]).score
+    return BLEU(tokenize=_bleu_tok(), max_ngram_order=n).corpus_score(hyps, [refs]).score
 
 
 def corpus_bleu4(hyps, refs):
     if not hyps:
         return float("nan")
-    return sacrebleu.corpus_bleu(hyps, [refs], tokenize="zh").score
+    return sacrebleu.corpus_bleu(hyps, [refs], tokenize=_bleu_tok()).score
 
 
 def corpus_chrf(hyps, refs):

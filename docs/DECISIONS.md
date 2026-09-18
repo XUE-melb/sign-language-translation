@@ -2132,3 +2132,19 @@ Auslan 几乎没有句子级公开数据 `[待核]`。选 **How2Sign**：录音�
 
 1. "换一种手语要改什么？"——数据目录、tokenizer、评测分词；编码器和训练循环不动。
 2. "为什么 ASL 数字低？"——编码器是中国手语预训练的，词表大 8 倍，数据域是教学视频。
+
+### 六、进展（2026-09-18 14:00）
+
+- **下载中断**：HF 的 Xet 传输后端（`cas-server.xethub.hf.co`）在本机前 12 个 train 分片之后一律 401，脚本重试 5 次后放弃，
+  链路带着 12,000 / 31,165 条 train、39 / 1,741 条 val（test 2,343 完整）跑完了提取。设 `HF_HUB_DISABLE_XET=1`
+  走普通 HTTP 后恢复（6 MB/s）；脚本改成幂等（hf_hub 跳过已有、`unzip -n`、提取跳过已有 pkl）13:52 重跑，
+  补 20 个 train + 17 个 val 分片，约 1 小时下载 + 约 13 小时提取（12,000 条用了 464 分钟，3 worker）。
+- **原版 mT5 权重**：transformers 4.57 在 torch 2.3 下拒绝 `torch.load` 的 `pytorch_model.bin`（安全策略，要求 torch ≥ 2.6
+  或 safetensors）。手动转成 `model.safetensors`（去掉与 `shared` 绑定的两个 embed_tokens 键，2.33 GB），
+  `from_pretrained` 通过，582.4M 参数。顺手删了没用的 tf/flax 权重，`weights/mt5-base` 6.6G → 2.2G。
+- **`--lang en` 已实现并冒烟通过**（commit 待推）：`metrics.set_lang`（BLEU 13a、ROUGE 按词）、`UniSignFull(lang=)`
+  （prefix "…to English:"、标签 64 token、生成保留空格、剥掉 `<extra_id_N>` 哨兵）、`train_stage2 --lang --root --csv-dir`，
+  meta 记录 lang/root。zh 路径逐字节不变。dev 39 条当 train 跑 2 轮：loss 15.7，输出是哨兵符——原版 mT5 未微调时的正常形态。
+- **训练链已排队**（`scripts/run_how2sign_train.sh`，tmux `work:h2strain`）：等第二次 `HOW2SIGN PREP DONE` 后自动跑
+  E-101（冻结编码器 + 原版 mT5 + LoRA，30 轮）→ test → E-102（解冻编码器 lr 1e-4，30 轮）→ test → 汇总。
+  每轮估 11 分钟（31k 句），两趟约 12 小时；预计 09-19 晚出全部数字。预判见 §四：E-101 test BLEU-4 3–7，E-102 明显更高。

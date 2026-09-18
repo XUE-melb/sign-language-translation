@@ -33,6 +33,8 @@ from slt.models.unisign_encoder import (OUT_DIM, UniSignPoseEncoder,
 MT5_DIR = "/root/autodl-tmp/slt/weights/mt5-base"
 CKPT = "/root/autodl-tmp/slt/weights/unisign/csl_stage1_weight.pth"
 PREFIX = "Translate sign language video to Chinese: "
+PREFIXES = {"zh": PREFIX, "en": "Translate sign language video to English: "}   # D-029
+LABEL_MAX = {"zh": 50, "en": 64}      # 英文句子 token 数更多（How2Sign 均 17 词）
 
 
 def _strip_prefix(sd, prefix):
@@ -41,10 +43,13 @@ def _strip_prefix(sd, prefix):
 
 class UniSignFull(nn.Module):
     def __init__(self, ckpt_path=CKPT, mt5_dir=MT5_DIR, load_mt5_weights=True,
-                 encoder_ckpt=None):
+                 encoder_ckpt=None, lang="zh"):
         """encoder_ckpt: 若给出，编码器从这个文件读，pose_proj/mT5 仍从 ckpt_path 读。
         用于混搭：E-001 的 stage-1 编码器 + CSL-Daily 的 mT5。"""
         super().__init__()
+        self.lang = lang
+        self.prefix = PREFIXES[lang]
+        self.label_max_length = LABEL_MAX[lang]
         self.tokenizer = _Tok.from_pretrained(mt5_dir, **_TOK_KW)
         if load_mt5_weights:
             # 权重全在 Uni-Sign checkpoint 里，HF 目录只借 config + tokenizer，
@@ -98,7 +103,7 @@ class UniSignFull(nn.Module):
         pose_mask = lengths_to_mask(feat_lens, pose.size(1)).long()
 
         B = feats.size(0)
-        tok = self.tokenizer([PREFIX] * B, padding="longest", truncation=True,
+        tok = self.tokenizer([self.prefix] * B, padding="longest", truncation=True,
                              return_tensors="pt").to(dev)
         prefix = self.mt5.encoder.embed_tokens(tok["input_ids"])           # (B,P,768)
 
@@ -111,7 +116,7 @@ class UniSignFull(nn.Module):
     def forward(self, feats, feat_lens, sentences, label_smoothing=0.0):
         inputs_embeds, attention_mask = self.build_inputs(feats, feat_lens)
         lab = self.tokenizer(list(sentences), return_tensors="pt", padding=True,
-                             truncation=True, max_length=50)["input_ids"].to(feats.device)
+                             truncation=True, max_length=self.label_max_length)["input_ids"].to(feats.device)
         lab[lab == self.tokenizer.pad_token_id] = -100
         out = self.mt5(inputs_embeds=inputs_embeds, attention_mask=attention_mask,
                        labels=lab, return_dict=True)
@@ -130,5 +135,10 @@ class UniSignFull(nn.Module):
                                 max_new_tokens=max_new_tokens,
                                 num_beams=num_beams)
         txt = self.tokenizer.batch_decode(ids, skip_special_tokens=True)
-        # 参考句无空格；sentencepiece 解码可能带空格，去掉以与字级指标对齐
-        return ["".join(t.split()) for t in txt]
+        # zh：参考句无空格，去掉 sentencepiece 可能带出的空格以与字级指标对齐；en：保留词间单空格。
+        # 原版 mT5 训练早期会吐 span-corruption 的哨兵符 <extra_id_N>，skip_special_tokens 不一定剥掉，这里兜底
+        import re
+        txt = [re.sub(r"<extra_id_\d+>", " ", t) for t in txt]
+        if self.lang == "zh":
+            return ["".join(t.split()) for t in txt]
+        return [" ".join(t.split()) for t in txt]

@@ -39,7 +39,7 @@ from torch.utils.data import ConcatDataset, DataLoader
 
 from slt.data import CharVocab, collate_fn
 from slt.data_rtm import RTMPoseSLTDataset
-from slt.metrics import evaluate, format_report
+from slt.metrics import evaluate, format_report, set_lang
 from slt.models.unisign_full import CKPT, UniSignFull
 
 ROOT = "/root/autodl-tmp/slt/CE-CSL"
@@ -48,7 +48,8 @@ CSVD = "/root/autodl-tmp/slt/TFNet/data/CE-CSL"
 
 def build_model(args, device):
     model = UniSignFull(ckpt_path=args.unisign_ckpt,
-                        load_mt5_weights=not args.hf_mt5).to(device)
+                        load_mt5_weights=not args.hf_mt5,
+                        lang=getattr(args, "lang", "zh")).to(device)
     unfreeze = bool(getattr(args, "unfreeze_encoder", False))
     for p in model.encoder.parameters():          # 阶段 2 视觉端不动；阶段 3 放开
         p.requires_grad_(unfreeze)
@@ -120,6 +121,7 @@ def _meta(args, meta, split, name):
             "seed": args.seed, "stage": 3 if unfreeze else 2,
             "lora_r": args.lora_r, "unfreeze_encoder": unfreeze,
             "encoder_lr": getattr(args, "encoder_lr", None), "exclude_signer": excl,
+            "lang": getattr(args, "lang", "zh"), "root": ROOT,
             "augment": bool(getattr(args, "augment", False)),
             "unisign_ckpt": os.path.basename(args.unisign_ckpt), "hf_mt5": args.hf_mt5,
             "protocol": ("留一手语者 {}（train/dev 均去掉）".format(excl) if excl
@@ -189,6 +191,7 @@ def run_signer_eval(model, args, device, out, meta, signer):
 
 
 def main():
+    global ROOT, CSVD                      # --root / --csv-dir 覆盖模块级默认（How2Sign，D-029）
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="", help="输出目录；--test-only 时可省略（默认同 run 目录）")
     ap.add_argument("--seed", type=int, default=1234)
@@ -220,6 +223,10 @@ def main():
     ap.add_argument("--eval-signer", default="",
                     help="与 --test-only 连用：在该手语者的 train+dev+test 全部片段上评")
     ap.add_argument("--test-only", default="", help="给 run 目录，只在 test 上评 best")
+    ap.add_argument("--lang", default="zh", choices=["zh", "en"],
+                    help="zh：CE-CSL；en：How2Sign（prefix/标签长度/去空格/评测分词随之切换，D-029）")
+    ap.add_argument("--root", default=ROOT, help="数据根目录（含 pose_rtm/）")
+    ap.add_argument("--csv-dir", default=CSVD, help="{train,dev,test}.csv 所在目录")
     ap.add_argument("--smoke", action="store_true")
     args = ap.parse_args()
     if not args.test_only and not args.out:
@@ -234,14 +241,19 @@ def main():
         saved = json.load(open(os.path.join(args.out, "best", "meta.json"), encoding="utf-8"))["args"]
         for k in ("lora_r", "lora_alpha", "lora_dropout", "unisign_ckpt", "hf_mt5", "max_frames", "seed"):
             setattr(args, k, saved[k])
-        for k, dflt in (("unfreeze_encoder", False), ("encoder_lr", None), ("exclude_signer", ""), ("augment", False)):
+        for k, dflt in (("unfreeze_encoder", False), ("encoder_lr", None), ("exclude_signer", ""), ("augment", False),
+                        ("lang", "zh"), ("root", ROOT), ("csv_dir", CSVD)):
             setattr(args, k, saved.get(k, dflt))      # 旧 run 的 meta 没有这些键
+        ROOT, CSVD = args.root, args.csv_dir
+        set_lang(args.lang)
         model = build_model(args, device)
         meta = run_test(model, args, device, args.out)
         if args.eval_signer:
             run_signer_eval(model, args, device, args.out, meta, args.eval_signer)
         return
 
+    ROOT, CSVD = args.root, args.csv_dir
+    set_lang(args.lang)
     os.makedirs(args.out, exist_ok=True)
     if args.train_split == args.eval_split:
         print("!! 训练集与评测集相同，冒烟用，数字不是结果", flush=True)
@@ -251,8 +263,8 @@ def main():
     model = build_model(args, device)
     n_tr = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_all = sum(p.numel() for p in model.parameters())
-    print("阶段 {} | 可训练 {:.2f}M / 总计 {:.1f}M | LoRA r={} | 编码器 {} | mT5 权重: {} | 权重加载 {}".format(
-        3 if args.unfreeze_encoder else 2, n_tr / 1e6, n_all / 1e6, args.lora_r,
+    print("阶段 {} | lang={} | 可训练 {:.2f}M / 总计 {:.1f}M | LoRA r={} | 编码器 {} | mT5 权重: {} | 权重加载 {}".format(
+        3 if args.unfreeze_encoder else 2, args.lang, n_tr / 1e6, n_all / 1e6, args.lora_r,
         "可训 lr={:g}".format(args.encoder_lr) if args.unfreeze_encoder else "冻结",
         "HF 原版" if args.hf_mt5 else "Uni-Sign", model.load_info), flush=True)
 
