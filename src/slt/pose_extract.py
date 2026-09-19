@@ -10,6 +10,7 @@
   extract_video(path)                 一段视频 → (K, S)
   PoseExtractor().frame(img, w, h)    逐帧（摄像头 / WebSocket 端侧），返回 (133,2), (133,)
 """
+import os
 import time
 
 import numpy as np
@@ -71,7 +72,34 @@ _EXTRACTOR = None
 
 
 def extract_video(path, max_seconds=None):
+    """优先走环境变量 SLT_RTMPOSE_CMD 指定的外部命令（GPU onnxruntime 的独立环境，D-030），否则进程内 CPU 提取。"""
+    cmd = os.environ.get("SLT_RTMPOSE_CMD")
+    if cmd:
+        return extract_video_external(path, cmd, max_seconds)
     global _EXTRACTOR
     if _EXTRACTOR is None:
         _EXTRACTOR = PoseExtractor()
     return _EXTRACTOR.video(path, max_seconds)
+
+
+def extract_video_external(path, cmd, max_seconds=None, timeout=600):
+    """子进程：`<cmd> <video> <out.pkl> [max_seconds]`，读回 pkl。cmd 例：
+    bash /root/autodl-tmp/slt/scripts/run_rtmpose.sh /root/autodl-tmp/slt/scripts/extract_one.py"""
+    import pickle
+    import shlex
+    import subprocess
+    import tempfile
+    fd, out = tempfile.mkstemp(suffix=".pkl"); os.close(fd)
+    try:
+        argv = shlex.split(cmd) + [path, out] + ([str(max_seconds)] if max_seconds else [])
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        if r.returncode != 0 or not os.path.getsize(out):
+            raise RuntimeError("外部提取失败: {}".format((r.stderr or r.stdout)[-400:]))
+        with open(out, "rb") as f:
+            d = pickle.load(f)
+        return d["keypoints"], d["scores"], d.get("meta", {"frames": len(d["keypoints"])})
+    finally:
+        try:
+            os.unlink(out)
+        except OSError:
+            pass

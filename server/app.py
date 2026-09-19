@@ -29,6 +29,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, W
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from slt.infer import Translator
+from slt.pose_extract import extract_video
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(HERE, "static")
@@ -179,7 +180,8 @@ async def translate_video(file: UploadFile = File(...), n_best: int = Form(4), b
     try:
         async with app.state.lock:
             loop = asyncio.get_running_loop()
-            K, S, meta = await loop.run_in_executor(None, lambda: _extractor().video(path, max_seconds))
+            # 有 SLT_RTMPOSE_CMD 时走 GPU onnxruntime 的独立环境子进程（远程部署，D-030），否则进程内 CPU 提取
+            K, S, meta = await loop.run_in_executor(None, lambda: extract_video(path, max_seconds))
     finally:
         os.unlink(path)
     if len(K) == 0:
