@@ -596,8 +596,15 @@ async function loadClips() {
     fillClips(); demoSel.innerHTML = '<option value="">不用示范</option>' + clipsAll.map(c => `<option value="${c.number}">${c.signer} · ${c.text}</option>`).join("");
   } catch (e) { sel.innerHTML = '<option>无法读取片段列表</option>'; }
 }
-function fillClips() { const s = $("signer").value; const list = clipsAll.filter(c => c.signer === s); $("clip").innerHTML = list.map(c => `<option value="${c.number}">${c.number.replace(/^test-/, "")} · ${c.text.length > 18 ? c.text.slice(0, 18) + "…" : c.text}</option>`).join(""); }
+function fillClips() {
+  const s = $("signer").value, hide = $("hide-ref").checked, keep = $("clip").value;
+  const list = clipsAll.filter(c => c.signer === s);
+  // 勾选"隐藏参考句"时下拉只显示编号和字数，否则答案在下拉框里就穿帮了
+  $("clip").innerHTML = list.map(c => `<option value="${c.number}">${c.number.replace(/^test-/, "")}${hide ? ` · ${c.text.length} 字` : ` · ${c.text.length > 18 ? c.text.slice(0, 18) + "…" : c.text}`}</option>`).join("");
+  if (list.some(c => c.number === keep)) $("clip").value = keep;
+}
 $("signer").addEventListener("change", fillClips);
+$("hide-ref").addEventListener("change", fillClips);
 $("random").addEventListener("click", () => { if (!clipsAll.length) return; const c = clipsAll[Math.floor(Math.random() * clipsAll.length)]; $("signer").value = c.signer; fillClips(); $("clip").value = c.number; $("play").click(); });
 
 $("play").addEventListener("click", async () => {
