@@ -62,9 +62,12 @@ RTX 5060 8 GB、Core Ultra 7 265K、47 GB 内存、Python 3.13。需要单独的
 
 ## 三、正在跑什么
 
-**`tmux work:h2s` 跑 `scripts/run_how2sign_prep.sh`**（09-18 13:52 第二次起跑补齐缺片，D-029 §六；第一次因 HF Xet 401 只下到 12/32 train 分片，
-已设 `HF_HUB_DISABLE_XET=1`）；**`tmux work:h2strain` 等它完成后自动跑 E-101 / E-102**（`scripts/run_how2sign_train.sh`，
-日志 `logs/how2sign_train.log`，约 09-19 晚 `HOW2SIGN TRAIN DONE`）。原链路说明：
+**`tmux work:h2strain2` 跑 E-103**（`scripts/run_how2sign_train2.sh`，09-19 19:23 起：解冻编码器 + 全量微调 mT5 + bf16，60 轮，
+每轮约 15 分钟，约 09-20 中午 `HOW2SIGN TRAIN2 DONE`，日志 `logs/how2sign_train2.log`）。E-101 1.52 / E-102 2.55 已入表（D-029 §七）。
+**远程 demo 已上线**（D-030）：`bash scripts/run_demo_remote.sh status`；端口 6006；本地隧道 `ssh -N -L 8000:127.0.0.1:6006 autodl`。
+DeepSeek key 放服务器 `~/.slt_env`（`export DEEPSEEK_API_KEY=...`）后 `restart` 即切到 LLM 裁判。
+
+历史：How2Sign 数据准备（09-18 00:26 / 13:52 两次，D-029 §六）：
 从 HF 镜像下载 How2Sign 正面片段（约 35 GB，5.5 MB/s，约 2 小时）→ 解压到 `/root/autodl-tmp/How2Sign/video/{train,dev,test}/H2S`
 → 生成 CE-CSL 同列名 CSV → RTMPose 提取（dev、test、train，估 12–20 小时）→ `HOW2SIGN PREP DONE`。
 查进度：`ssh autodl 'tail -5 /root/autodl-tmp/slt/logs/how2sign_prep.log'`
@@ -170,7 +173,7 @@ E-002 60 轮按 D-025 规则成为正式行（差 0.38 恰过阈值 0.378，1/3 
 ## 七、未解决的问题
 
 ### 阻塞
-- 第一章无阻塞。第二章：数据补齐 + 提取在跑，训练链排队；无需人工。
+- 第一章无阻塞。第二章 E-103 在跑。远程 demo 等本人的 DeepSeek key（可选）。实例 09-28 到期：续费或迁移（D-030 §三）。
 
 ### 记录在案、暂不修
 - 原版 mT5（路线 (b)）已砍；只训 pose_proj 无 LoRA、label_smoothing 0.2 的对照未做

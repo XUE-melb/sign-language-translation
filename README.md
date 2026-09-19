@@ -73,6 +73,8 @@ set PYTHONPATH=src
 | D agent | `agent/judge.py` + 页面 Agent 面板 | LLM 裁判只在 n-best 里选并判定是否追问（Claude / DeepSeek 双后端，规则版兜底）。test 集评测：重排 +2.07 BLEU-4（上限 +7.22），门控直接输出部分 30.5 vs 追问部分 15.1（D-027） |
 
 页面三种输入：测试集骨架回放（私下展示用，只播关键点不播视频）、上传视频、摄像头录制。
+服务器部署：`bash scripts/run_demo_remote.sh start`（端口 6006，上传视频的关键点提取走 GPU 环境子进程），
+本地 `ssh -N -L 8000:127.0.0.1:6006 <server>` 后打开 http://127.0.0.1:8000（D-030）。
 推理封装 `src/slt/infer.py` 把 LoRA 合并进 mT5 主干，接口 `translate((T,207)) -> [(text, logprob)]`，
 本地 RTX 5060 上每条约 0.2 s。设计系统由 UI/UX Pro Max 生成，见 `design-system/slt-demo/MASTER.md`。
 

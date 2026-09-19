@@ -2148,3 +2148,57 @@ Auslan 几乎没有句子级公开数据 `[待核]`。选 **How2Sign**：录音�
 - **训练链已排队**（`scripts/run_how2sign_train.sh`，tmux `work:h2strain`）：等第二次 `HOW2SIGN PREP DONE` 后自动跑
   E-101（冻结编码器 + 原版 mT5 + LoRA，30 轮）→ test → E-102（解冻编码器 lr 1e-4，30 轮）→ test → 汇总。
   每轮估 11 分钟（31k 句），两趟约 12 小时；预计 09-19 晚出全部数字。预判见 §四：E-101 test BLEU-4 3–7，E-102 明显更高。
+
+### 七、首轮结果（2026-09-19 19:30，对账）
+
+| 实验 | 配置 | test BLEU-4 greedy / beam4 | dev 曲线 | 预判 | 判定 |
+|---|---|---:|---|---|---|
+| E-101 | 冻结编码器 + 原版 mT5 + LoRA r=16，30 轮 | **1.52** / 1.40（地板 1.29） | 0.1–1.7 无趋势，loss 4.5→3.2；2,343 句只有 23 种输出 | 3–7 | **错，贴地板** |
+| E-102 | 同上 + 解冻编码器 lr 1e-4，30 轮 | **2.55** / 2.16 | 30 轮末 2.61 仍在涨，loss 2.94 | 明显更高 | 方向对，量小 |
+
+- 输入没有问题：How2Sign 的关键点质量比 CE-CSL 还好（手检出率 1.00 vs 0.89，手部置信 0.88 vs 0.71）。
+- 失败是**迁移 + 容量**：CSL 预训练编码器给不出对 ASL 有区分度的特征，4M 的 LoRA 面对 16k 词开放域，最省力的解是
+  背一句最常见的话（"So, when you're going to be using a brush…"）。CE-CSL 能成是因为 Uni-Sign 在同域 CSL-Daily 微调过，
+  零样本就有 3.09；这里起点为零。
+- 解冻编码器把 dev 从地板拉到 2.6 且未收敛 → 下一档容量：**E-103 解冻编码器 + 全量微调 mT5（587.75M 可训）+ bf16，60 轮**，
+  显存冒烟通过（约 17 GB），19:23 起跑，每轮估 15 分钟，约 09-20 中午出。若仍 <5，第二章以"管线跑通、跨语言迁移
+  失败并给出诊断"收尾。文献口径 `[待核]`：How2Sign 上 I3D 特征从头训的 transformer 约 8，带千小时 ASL 预训练 12–15。
+
+---
+
+## D-030 demo 部署到 AutoDL 服务器：本人回国后台式机不在身边
+
+- **日期**：2026-09-19 19:30
+- **状态**：`[已上线]` 服务在 tmux 外以 nohup 常驻，`scripts/run_demo_remote.sh start|stop|status|restart`
+
+### 一、问题
+
+本人近期回国，本地 5060 台式机带不走；demo 必须能从国内访问。约束：AutoDL 服务器在北京，连不上 Claude API 和 Google；
+训练环境 torch 2.3 只能配 CPU 版 onnxruntime，GPU 版只在 `.venv-rtmpose` 里能起（D-020）。
+
+### 二、做法
+
+| 项 | 决定 |
+|---|---|
+| 进程 | 训练环境（miniconda）跑 uvicorn，`0.0.0.0:6006`（AutoDL"自定义服务"映射端口），日志 `logs/demo_remote.log`，pid 文件 `logs/demo.pid` |
+| 模型 | `runs/E003_enc1e-4_s3456`（服务器上就是训练产物，无需拷贝）；全量 CE-CSL 关键点在服务器上，回放模式可选 12 位手语者 500 条 test |
+| 上传视频提取 | 进程内 CPU 版 onnxruntime 实测 1.2 s/帧（一段 4.7 s 视频 3 分钟，不可用）→ 改为子进程调用 `.venv-rtmpose` 的
+  `scripts/extract_one.py`（`SLT_RTMPOSE_CMD`），GPU 6.9 s/段，端到端 9 s |
+| 裁判 | 国内直连不了 Claude → `~/.slt_env` 里放 `DEEPSEEK_API_KEY` 走 DeepSeek，没有就规则版；agent 代码不改（D-027 双后端） |
+| 访问 | 两条路：本人笔记本 `ssh -N -L 8000:127.0.0.1:6006 -p <端口> root@<主机>` 后开 `http://127.0.0.1:8000`（隧道已从墨尔本实测通）；
+  或 AutoDL 控制台"自定义服务"给的公网 https 链接（给朋友看，WebSocket 是否被其代理放行 `[待核]`） |
+| 依赖 | 训练环境新增 fastapi / uvicorn / python-multipart / websockets / openai / rtmlib / onnxruntime 1.19.2 / opencv-contrib-python-headless 4.10。
+  **pip 曾把 numpy 升到 2.5.3 破坏 torch 2.3**，已钉回 1.26.4（CLAUDE.md"遇冲突降级"再一次） |
+
+### 三、代价与风险
+
+- 实例 09-28 到期；要长期演示需续费或换更便宜的实例（demo 推理 2.4 GB 显存，任何卡都够），换实例时只需拷
+  `weights/`、`runs/E003_enc1e-4_s3456/best`、`CE-CSL/pose_rtm/test`、代码与两个 venv 的依赖清单。
+- 服务与训练共用 GPU（demo 2.4 GB + E-103 17 GB = 19 GB / 24 GB），训练期间上传模式会慢一点。
+- 公网链接无鉴权：AutoDL 的自定义服务链接本身带随机路径 `[待核]`，只私下分享。
+
+### 面试官最可能问
+
+1. "线上怎么部署的？"——单进程 FastAPI 常驻模型，提取走独立 GPU 环境的子进程，前端只传坐标或短视频。
+2. "为什么不用 Docker？"——单机单服务，两个 Python 环境是历史包袱（onnxruntime-gpu 与 torch 的 CUDA 版本冲突），
+   容器化收益小；写在待办里。
