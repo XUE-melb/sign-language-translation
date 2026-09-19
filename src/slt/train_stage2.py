@@ -53,9 +53,10 @@ def build_model(args, device):
     unfreeze = bool(getattr(args, "unfreeze_encoder", False))
     for p in model.encoder.parameters():          # 阶段 2 视觉端不动；阶段 3 放开
         p.requires_grad_(unfreeze)
-    for p in model.mt5.parameters():              # 主干冻结
-        p.requires_grad_(False)
-    if args.lora_r > 0:
+    train_mt5 = bool(getattr(args, "train_mt5", False))
+    for p in model.mt5.parameters():              # 主干默认冻结；--train-mt5 全量微调（How2Sign 容量实验，D-029）
+        p.requires_grad_(train_mt5)
+    if args.lora_r > 0 and not train_mt5:
         from peft import LoraConfig, get_peft_model
         cfg = LoraConfig(r=args.lora_r, lora_alpha=args.lora_alpha,
                          lora_dropout=args.lora_dropout,
@@ -91,7 +92,9 @@ def save_best(model, out, args, epoch, dev_bleu4):
     d = os.path.join(out, "best")
     os.makedirs(d, exist_ok=True)
     torch.save(model.pose_proj.state_dict(), os.path.join(d, "pose_proj.pt"))
-    if args.lora_r > 0:
+    if getattr(args, "train_mt5", False):
+        torch.save(model.mt5.state_dict(), os.path.join(d, "mt5_full.pt"))
+    elif args.lora_r > 0:
         model.mt5.save_pretrained(os.path.join(d, "lora"))
     if getattr(args, "unfreeze_encoder", False):
         torch.save(model.encoder.state_dict(), os.path.join(d, "encoder.pt"))
@@ -103,7 +106,10 @@ def save_best(model, out, args, epoch, dev_bleu4):
 def load_best(model, out, args):
     d = os.path.join(out, "best")
     model.pose_proj.load_state_dict(torch.load(os.path.join(d, "pose_proj.pt"), map_location="cpu"))
-    if args.lora_r > 0:
+    full = os.path.join(d, "mt5_full.pt")
+    if os.path.exists(full):
+        model.mt5.load_state_dict(torch.load(full, map_location="cpu"))
+    elif args.lora_r > 0:
         from peft import PeftModel
         base = model.mt5.get_base_model() if hasattr(model.mt5, "get_base_model") else model.mt5
         model.mt5 = PeftModel.from_pretrained(base, os.path.join(d, "lora"))
@@ -122,6 +128,7 @@ def _meta(args, meta, split, name):
             "lora_r": args.lora_r, "unfreeze_encoder": unfreeze,
             "encoder_lr": getattr(args, "encoder_lr", None), "exclude_signer": excl,
             "lang": getattr(args, "lang", "zh"), "root": ROOT,
+            "train_mt5": bool(getattr(args, "train_mt5", False)), "mt5_lr": getattr(args, "mt5_lr", None),
             "augment": bool(getattr(args, "augment", False)),
             "unisign_ckpt": os.path.basename(args.unisign_ckpt), "hf_mt5": args.hf_mt5,
             "protocol": ("留一手语者 {}（train/dev 均去掉）".format(excl) if excl
@@ -216,6 +223,9 @@ def main():
                     help="阶段 3：视觉编码器参与训练（D-026）")
     ap.add_argument("--encoder-lr", type=float, default=None,
                     help="编码器学习率，默认等于 --lr；只在 --unfreeze-encoder 时有意义")
+    ap.add_argument("--train-mt5", action="store_true",
+                    help="全量微调 mT5 主干（忽略 LoRA），配 --mt5-lr；显存约 +10 GB，建议 --bf16（D-029）")
+    ap.add_argument("--mt5-lr", type=float, default=None, help="mT5 主干学习率，默认等于 --lr")
     ap.add_argument("--exclude-signer", default="",
                     help="E-004：train 与 dev 都去掉这位手语者（如 E）")
     ap.add_argument("--augment", action="store_true",
@@ -242,7 +252,7 @@ def main():
         for k in ("lora_r", "lora_alpha", "lora_dropout", "unisign_ckpt", "hf_mt5", "max_frames", "seed"):
             setattr(args, k, saved[k])
         for k, dflt in (("unfreeze_encoder", False), ("encoder_lr", None), ("exclude_signer", ""), ("augment", False),
-                        ("lang", "zh"), ("root", ROOT), ("csv_dir", CSVD)):
+                        ("lang", "zh"), ("root", ROOT), ("csv_dir", CSVD), ("train_mt5", False), ("mt5_lr", None)):
             setattr(args, k, saved.get(k, dflt))      # 旧 run 的 meta 没有这些键
         ROOT, CSVD = args.root, args.csv_dir
         set_lang(args.lang)
@@ -285,11 +295,14 @@ def main():
         + (" | 训练增广开" if args.augment else ""), flush=True)
 
     enc_params = [p for p in model.encoder.parameters() if p.requires_grad]
+    mt5_params = [p for name, p in model.named_parameters() if p.requires_grad and name.startswith("mt5.")] if args.train_mt5 else []
     other = [p for name, p in model.named_parameters()
-             if p.requires_grad and not name.startswith("encoder.")]
+             if p.requires_grad and not name.startswith("encoder.") and not (args.train_mt5 and name.startswith("mt5."))]
     groups = [{"params": other, "lr": args.lr}]
     if enc_params:
         groups.append({"params": enc_params, "lr": args.encoder_lr})
+    if mt5_params:
+        groups.append({"params": mt5_params, "lr": args.mt5_lr if args.mt5_lr is not None else args.lr})
     opt = torch.optim.AdamW(groups)
     best, hist = -1.0, []
     t_start = time.time()
