@@ -2186,7 +2186,7 @@ Auslan 几乎没有句子级公开数据 `[待核]`。选 **How2Sign**：录音�
   `scripts/extract_one.py`（`SLT_RTMPOSE_CMD`），GPU 6.9 s/段，端到端 9 s |
 | 裁判 | 国内直连不了 Claude → `~/.slt_env` 里放 `DEEPSEEK_API_KEY` 走 DeepSeek，没有就规则版；agent 代码不改（D-027 双后端） |
 | 访问 | 两条路：本人笔记本 `ssh -N -L 8000:127.0.0.1:6006 -p <端口> root@<主机>` 后开 `http://127.0.0.1:8000`（隧道已从墨尔本实测通）；
-  或 AutoDL 控制台"自定义服务"给的公网 https 链接（给朋友看，WebSocket 是否被其代理放行 `[待核]`） |
+  或 AutoDL 控制台"自定义服务"给的公网 https 链接（给朋友看；09-19 从墨尔本实测页面、API、WebSocket 回放全通，首屏 2.3 s，一句回放 4.2 s） |
 | 依赖 | 训练环境新增 fastapi / uvicorn / python-multipart / websockets / openai / rtmlib / onnxruntime 1.19.2 / opencv-contrib-python-headless 4.10。
   **pip 曾把 numpy 升到 2.5.3 破坏 torch 2.3**，已钉回 1.26.4（CLAUDE.md"遇冲突降级"再一次） |
 
@@ -2195,7 +2195,7 @@ Auslan 几乎没有句子级公开数据 `[待核]`。选 **How2Sign**：录音�
 - 实例 09-28 到期；要长期演示需续费或换更便宜的实例（demo 推理 2.4 GB 显存，任何卡都够），换实例时只需拷
   `weights/`、`runs/E003_enc1e-4_s3456/best`、`CE-CSL/pose_rtm/test`、代码与两个 venv 的依赖清单。
 - 服务与训练共用 GPU（demo 2.4 GB + E-103 17 GB = 19 GB / 24 GB），训练期间上传模式会慢一点。
-- 公网链接无鉴权：AutoDL 的自定义服务链接本身带随机路径 `[待核]`，只私下分享。
+- 公网链接无鉴权：形如 `https://u<实例id>-<随机串>.bjb3.seetacloud.com:8443`，随机串即凭证，只私下分享；https 使浏览器允许摄像头。
 
 ### 面试官最可能问
 
