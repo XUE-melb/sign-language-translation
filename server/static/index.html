@@ -694,6 +694,7 @@ $("cam-stop").addEventListener("click", () => { stopCamera(); $("cam-status").te
 $("rec").addEventListener("click", () => {
   if (!stream) return;
   if (recorder && recorder.state === "recording") { recorder.stop(); return; }
+  stopPlayback(); onDone = null; camVideo.hidden = false;   // 录制时把舞台还给摄像头画面
   chunks = [];
   const mime = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm", "video/mp4"].find(m => MediaRecorder.isTypeSupported(m)) || "";
   recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
@@ -716,9 +717,23 @@ $("rec").addEventListener("click", () => {
   recTimer = setInterval(() => { const s = (performance.now() - t0) / 1000; $("cam-status").textContent = `录制中 ${s.toFixed(1)} s`; if (s >= 10) recorder.stop(); }, 200);
 });
 $("demo-play").addEventListener("click", async () => {
-  const num = $("demo-clip").value; if (!num) return;
-  try { const clip = await api("/api/clip/" + encodeURIComponent(num)); camVideo.hidden = true; loadFrames(clip.keypoints, clip.scores, clip.fps, 16, 9); refEl.hidden = false; refEl.textContent = "示范句：" + clip.text; startPlayback(false); }
-  catch (e) { $("cam-error").hidden = false; $("cam-error").textContent = e.message; }
+  let num = $("demo-clip").value;
+  if (!num) {                                   // 没选就随机挑一句，并把下拉同步过去，别让按钮"没反应"
+    if (!clipsAll.length) { $("cam-error").hidden = false; $("cam-error").textContent = "片段列表还没加载好，稍等再点。"; return; }
+    num = clipsAll[Math.floor(Math.random() * clipsAll.length)].number; $("demo-clip").value = num;
+  }
+  const btn = $("demo-play"); btn.disabled = true; btn.innerHTML = '<span class="spinner" aria-hidden="true"></span>读取示范…';
+  $("cam-error").hidden = true; $("cam-status").textContent = "正在读取示范关键点（约 1 MB）…";
+  try {
+    const clip = await api("/api/clip/" + encodeURIComponent(num));
+    camVideo.hidden = true;                     // 示范播放期间让出舞台，播完若摄像头还开着就切回去
+    loadFrames(clip.keypoints, clip.scores, clip.fps, 16, 9);
+    refEl.hidden = false; refEl.textContent = "示范句：" + clip.text;
+    $("cam-status").textContent = "示范播放中：" + clip.text + "。看完点\"开始录制\"照着打。";
+    onDone = () => { onDone = null; if (stream) { camVideo.hidden = false; $("cam-status").textContent = "示范播完，摄像头已回来，可以开始录制。"; } };
+    startPlayback(false);
+  } catch (e) { $("cam-error").hidden = false; $("cam-error").textContent = "读取示范失败：" + e.message; $("cam-status").textContent = ""; }
+  finally { btn.disabled = false; btn.textContent = "播放示范骨架"; }
 });
 
 /* ---------- 启动 ---------- */
