@@ -5,9 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>手语翻译 Demo</title>
 <meta name="description" content="CE-CSL 手语翻译演示：关键点流 → Uni-Sign 编码器 + mT5 → 流式译文与置信度">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<!-- 不再引用 Google Fonts：国内访问会阻塞渲染；字体栈退到系统字体，视觉令牌不变（D-030） -->
 <style>
 /* ---------- 设计令牌（design-system/slt-demo/MASTER.md，Flat Design） ---------- */
 :root {
@@ -369,7 +367,7 @@ themeBtn.addEventListener("click", () => {
   const dark = themeBtn.getAttribute("aria-pressed") === "true";
   theme = dark ? "light" : "dark"; applyTheme(theme);
   try { localStorage.setItem("slt-theme", theme); } catch (e) {}
-  draw(); // 画布颜色随令牌变
+  COLORS = null; draw(); // 画布颜色随令牌变
 });
 
 /* ---------- 标签页 ---------- */
@@ -393,7 +391,10 @@ const USED_BODY = new Set([0,3,4,5,6,7,8,9,10]);
 const USED_FACE = new Set([...Array.from({length:9},(_,i)=>23+2*i), 83,84,85,86,87,88,89,90, 53]);
 const THR = 0.3;
 
+const r3 = x => Math.round(x * 1000) / 1000, r2 = x => Math.round(x * 100) / 100;
 const canvas = $("skel"), ctx = canvas.getContext("2d");
+let COLORS = null;      // 骨架颜色随主题变；每帧读 getComputedStyle 四次太浪费，缓存到主题切换
+function colors() { if (!COLORS) COLORS = { body: css("--skel-body"), left: css("--skel-left"), right: css("--skel-right"), face: css("--skel-face") }; return COLORS; }
 let frames = null, scores = null, fps = 30, aspect = 16 / 9, curIdx = 0;
 function css(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
 function setAspect(w, h) { aspect = (w && h) ? w / h : 16 / 9; canvas.style.aspectRatio = `${w || 16} / ${h || 9}`; canvas.width = 1280; canvas.height = Math.round(1280 / aspect); }
@@ -410,7 +411,7 @@ function draw(idx = curIdx) {
     ctx.strokeStyle = color; ctx.globalAlpha = Math.min(alpha(a), alpha(b)); ctx.lineWidth = width; ctx.stroke();
   };
   const dot = (i, color, r) => { ctx.beginPath(); ctx.arc(...P(i), r, 0, Math.PI * 2); ctx.fillStyle = color; ctx.globalAlpha = alpha(i); ctx.fill(); };
-  const cBody = css("--skel-body"), cL = css("--skel-left"), cR = css("--skel-right"), cF = css("--skel-face");
+  const { body: cBody, left: cL, right: cR, face: cF } = colors();
   ctx.lineCap = "round"; ctx.lineJoin = "round";
   BODY_EDGES.forEach(([a, b]) => line(a, b, cBody, 4));
   for (let i = 0; i < 17; i++) dot(i, cBody, USED_BODY.has(i) ? 6 : 4);
@@ -441,7 +442,7 @@ function tick(now) {
   if (!playing || paused) return;
   const idx = Math.min(frames.length - 1, Math.floor(((now - t0) / 1000) * fps));
   if (idx !== curIdx) { curIdx = idx; draw(idx); }
-  if (ws && ws.readyState === 1) { while (sent <= idx) { ws.send(JSON.stringify({ type: "frame", kp: frames[sent], sc: scores[sent] })); sent++; } }
+  if (ws && ws.readyState === 1) { while (sent <= idx) { ws.send(JSON.stringify({ type: "frame", kp: frames[sent].map(q => [r3(q[0]), r3(q[1])]), sc: scores[sent].map(r2) })); sent++; } }
   if (idx >= frames.length - 1) {
     playing = false; $("pause").disabled = true;
     if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "end" }));
@@ -602,41 +603,59 @@ function fillClips() {
   // 勾选"隐藏参考句"时下拉只显示编号和字数，否则答案在下拉框里就穿帮了
   $("clip").innerHTML = list.map(c => `<option value="${c.number}">${c.number.replace(/^test-/, "")}${hide ? ` · ${c.text.length} 字` : ` · ${c.text.length > 18 ? c.text.slice(0, 18) + "…" : c.text}`}</option>`).join("");
   if (list.some(c => c.number === keep)) $("clip").value = keep;
+  if (typeof prefetchSelected === "function") prefetchSelected();
 }
 $("signer").addEventListener("change", fillClips);
 $("hide-ref").addEventListener("change", fillClips);
 $("random").addEventListener("click", () => { if (!clipsAll.length) return; const c = clipsAll[Math.floor(Math.random() * clipsAll.length)]; $("signer").value = c.signer; fillClips(); $("clip").value = c.number; $("play").click(); });
 
+// 片段关键点缓存 + 预取：选中就开始下载（远程约 1 MB，gzip 后约 250 KB），点播放时多半已经在本地
+const clipCache = new Map();
+function getClip(num) {
+  if (!clipCache.has(num)) clipCache.set(num, api("/api/clip/" + encodeURIComponent(num)).catch(e => { clipCache.delete(num); throw e; }));
+  return clipCache.get(num);
+}
+function prefetchSelected() { const n = $("clip").value; if (n) getClip(n).catch(() => {}); }
+$("clip").addEventListener("change", prefetchSelected);
+
 $("play").addEventListener("click", async () => {
   const num = $("clip").value; if (!num) return;
   const btn = $("play"); btn.disabled = true; btn.innerHTML = '<span class="spinner" aria-hidden="true"></span>读取片段…';
   resetOutput();
+  const sock = openStream();                      // WebSocket 握手与关键点下载并行
   try {
-    const clip = await api("/api/clip/" + encodeURIComponent(num));
+    const clip = await getClip(num);
     currentRef = clip.text;
     loadFrames(clip.keypoints, clip.scores, clip.fps, 16, 9);
     if (!$("hide-ref").checked) { refEl.hidden = false; refEl.textContent = "参考句：" + clip.text; }
     const every = +$("every").value;
-    await streamAndPlay(every, clip.text);
-  } catch (e) { setLive("出错：" + e.message, true); }
+    await streamAndPlay(sock, every, clip.text);
+  } catch (e) { setLive("出错：" + e.message, true); try { sock.close(); } catch (e2) {} }
   finally { btn.disabled = false; btn.innerHTML = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4l14 8-14 8z"/></svg>播放并翻译'; }
 });
-function streamAndPlay(every, refText) {
+function openStream() {
+  if (ws) { try { ws.close(); } catch (e) {} }
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/ws/stream`);
+  ws.onerror = () => setLive("WebSocket 连接失败", true);
+  return ws;
+}
+function streamAndPlay(sock, every, refText) {
   return new Promise((resolve) => {
-    if (ws) { try { ws.close(); } catch (e) {} }
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    ws = new WebSocket(`${proto}://${location.host}/ws/stream`);
     const started = performance.now(); let partials = 0;
-    ws.onopen = () => { ws.send(JSON.stringify({ type: "start", partial_every: every, n_best: 4, beams: 4 })); };
-    ws.onmessage = (ev) => {
+    const sendStart = () => sock.send(JSON.stringify({ type: "start", partial_every: every, n_best: 4, beams: 4 }));
+    sock.onmessage = (ev) => {
       const m = JSON.parse(ev.data);
       if (m.type === "ready") { setLive("推流中…", true); startPlayback(true); }
       else if (m.type === "partial") { partials++; setLive(m.text || "…"); liveMeta.textContent = `部分结果 #${partials} · 已收 ${m.frames} 帧 · greedy ${m.ms} ms`; }
-      else if (m.type === "final") { showFinal(m, refText); $("timing").textContent = `${((performance.now() - started) / 1000).toFixed(1)} s`; ws.close(); resolve(); }
+      else if (m.type === "final") { showFinal(m, refText); $("timing").textContent = `${((performance.now() - started) / 1000).toFixed(1)} s`; sock.close(); resolve(); }
       else if (m.type === "error") { setLive("服务端：" + m.msg, true); }
     };
-    ws.onerror = () => { setLive("WebSocket 连接失败", true); resolve(); };
-    ws.onclose = () => { stopPlayback(); resolve(); };
+    sock.onerror = () => { setLive("WebSocket 连接失败", true); resolve(); };
+    sock.onclose = () => { stopPlayback(); resolve(); };
+    if (sock.readyState === 1) sendStart();
+    else if (sock.readyState === 0) sock.addEventListener("open", sendStart, { once: true });
+    else { setLive("WebSocket 已关闭，请重试", true); resolve(); }
   });
 }
 

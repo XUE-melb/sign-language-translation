@@ -48,6 +48,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="SLT demo", lifespan=lifespan)
+from starlette.middleware.gzip import GZipMiddleware          # 关键点 JSON 约 1 MB/句，gzip 后约 1/4（远程访问，D-030）
+app.add_middleware(GZipMiddleware, minimum_size=2048)
 
 
 def _nbest_json(nb):
