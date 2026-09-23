@@ -62,8 +62,7 @@ RTX 5060 8 GB、Core Ultra 7 265K、47 GB 内存、Python 3.13。需要单独的
 
 ## 三、正在跑什么
 
-**`tmux work:h2strain2` 跑 E-103**（`scripts/run_how2sign_train2.sh`，09-19 19:23 起：解冻编码器 + 全量微调 mT5 + bf16，60 轮，
-每轮约 15 分钟，约 09-20 中午 `HOW2SIGN TRAIN2 DONE`，日志 `logs/how2sign_train2.log`）。E-101 1.52 / E-102 2.55 已入表（D-029 §七）。
+**没有在跑的任务。** 第二章收尾：E-101 1.52 / E-102 2.55 / E-103 1.58，负结果与诊断见 D-029 §八，已入 EXPERIMENTS。
 **远程 demo 已上线**（D-030）：`bash scripts/run_demo_remote.sh status`；端口 6006；本地隧道 `ssh -N -L 8000:127.0.0.1:6006 autodl`。
 DeepSeek key 放服务器 `~/.slt_env`（`export DEEPSEEK_API_KEY=...`）后 `restart` 即切到 LLM 裁判。
 
@@ -173,7 +172,7 @@ E-002 60 轮按 D-025 规则成为正式行（差 0.38 恰过阈值 0.378，1/3 
 ## 七、未解决的问题
 
 ### 阻塞
-- 第一章无阻塞。第二章 E-103 在跑。远程 demo 等本人的 DeepSeek key（可选）。实例 09-28 到期：续费或迁移（D-030 §三）。
+- 模型线全部结束。**实例 09-28 到期**：产物已打包回本地（见 D-031），demo 去留由本人决定。远程 demo 等 DeepSeek key（可选）。
 
 ### 记录在案、暂不修
 - 原版 mT5（路线 (b)）已砍；只训 pose_proj 无 LoRA、label_smoothing 0.2 的对照未做
