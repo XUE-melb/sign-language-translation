@@ -33,3 +33,6 @@ weights/
 .env
 .env.*
 *.key
+
+# 服务器产物打包（大文件，本地留存）
+backup/
